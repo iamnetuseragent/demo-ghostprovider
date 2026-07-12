@@ -2,6 +2,8 @@
 
 A demo version of GhostProvider with limited service support.
 
+![Demo GhostProvider](demo-ghostprovider.png)
+
 ## What is this
 
 This is a restricted demo version of GhostProvider that only supports deploying the following services:
