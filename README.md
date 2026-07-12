@@ -22,8 +22,6 @@ cd demo-ghostprovider
 makepkg -si
 ```
 
-Dependencies (Git) will be installed automatically if missing.
-
 ## Usage
 
 ```bash

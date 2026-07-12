@@ -555,41 +555,10 @@ class RepoResultScreen(Screen):
 
         # Pre-check: git must be installed before we can clone
         if not is_installed("git"):
-            await rain.typewrite_status("git not found, checking package manager...", speed=0.04)
-            pm = detect_pm()
-            if pm:
-                await rain.typewrite_ok(f"Package manager: {pm}", addr="PM", speed=0.02)
-                confirmed = await self._ask_confirm(
-                    "[yellow]Git is not installed.[/yellow]\n"
-                    f"[yellow]Install via {pm}?[/yellow]"
-                )
-                if confirmed:
-                    password = await self._ask_sudo()
-                    if password is not None:
-                        await rain.typewrite_ok("installing git...", addr="INST", speed=0.02)
-                        loop = asyncio.get_event_loop()
-                        failed, warnings = await loop.run_in_executor(
-                            None, lambda: install_tools(["git"], password=password)
-                        )
-                        if failed:
-                            rain.write_fail("FAILED TO INSTALL GIT", detail="ERR")
-                            rain.write_fail("install manually and try again", detail="ERR")
-                            rain.set_status("Enter — return")
-                            return
-                        await rain.typewrite_ok("git installed", addr="DONE", speed=0.02)
-                    else:
-                        rain.write_fail("INSTALLATION CANCELLED", detail="")
-                        rain.set_status("Enter — return")
-                        return
-                else:
-                    rain.write_fail("Git is required to clone repositories", detail="")
-                    rain.set_status("Enter — return")
-                    return
-            else:
-                rain.write_fail("No package manager found", detail="ERR")
-                rain.write_fail("install git manually", detail="ERR")
-                rain.set_status("Enter — return")
-                return
+            rain.write_fail("Git is not installed", detail="ERR")
+            rain.write_fail("install git and try again", detail="ERR")
+            rain.set_status("Enter — return")
+            return
 
         await rain.typewrite_status("cloning repository...", speed=0.04)
         await asyncio.sleep(0.2)
