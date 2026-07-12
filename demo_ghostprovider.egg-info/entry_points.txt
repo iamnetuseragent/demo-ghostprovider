@@ -1,0 +1,2 @@
+[console_scripts]
+demo-ghostprovider = demo_ghostprovider.__main__:run

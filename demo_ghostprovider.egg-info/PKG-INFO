@@ -1,0 +1,57 @@
+Metadata-Version: 2.4
+Name: demo-ghostprovider
+Version: 1.0.0
+Summary: Demo version: TUI for self-hosting & localhost management (limited to 3 services)
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: textual>=0.41.0
+Requires-Dist: requests>=2.28.0
+Dynamic: license-file
+
+# Demo GhostProvider
+
+A demo version of GhostProvider with limited service support.
+
+## What is this
+
+This is a restricted demo version of GhostProvider that only supports deploying the following services:
+
+- **VERT** - https://github.com/VERT-sh/VERT
+- **SearXNG** - https://github.com/searxng/searxng
+- **Memos** - https://github.com/usememos/memos
+
+All other repositories will be rejected with a clear error message.
+
+## Install
+
+```bash
+cd demo-ghostprovider
+python3 -m venv .venv
+.venv/bin/pip install .
+ln -s "$(pwd)/.venv/bin/demo-ghostprovider" ~/.local/bin/demo-ghostprovider
+```
+
+## Usage
+
+```bash
+demo-ghostprovider
+```
+
+## Features
+
+- Full TUI interface with cyberpunk theme
+- System scanning and analysis
+- Service management (start, stop, restart, remove)
+- Only 3 allowed repositories can be deployed
+- All other GhostProvider features remain intact
+
+## Differences from full version
+
+- Restricted to 3 specific repositories
+- Config stored in `~/.config/demo-ghostprovider/`
+- Entry point: `demo-ghostprovider`
+
+## License
+
+MIT
