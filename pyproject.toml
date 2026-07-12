@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "demo-ghostprovider"
+version = "1.0.0"
+description = "Demo version: TUI for self-hosting & localhost management (limited to 3 services)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.41.0",
+    "requests>=2.28.0",
+]
+
+[project.scripts]
+demo-ghostprovider = "demo_ghostprovider.__main__:run"
+
+[tool.setuptools.packages.find]
+include = ["demo_ghostprovider*"]
