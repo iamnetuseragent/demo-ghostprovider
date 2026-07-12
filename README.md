@@ -14,24 +14,6 @@ All other repositories will be rejected with a clear error message.
 
 ## Install
 
-### Any Linux
-
-```bash
-git clone https://github.com/iamnetuseragent/demo-ghostprovider.git
-cd demo-ghostprovider
-python3 -m venv .venv
-.venv/bin/pip install .
-ln -s "$(pwd)/.venv/bin/demo-ghostprovider" ~/.local/bin/demo-ghostprovider
-```
-
-After install, run from anywhere:
-
-```bash
-demo-ghostprovider
-```
-
-### Arch Linux
-
 ```bash
 git clone https://github.com/iamnetuseragent/demo-ghostprovider.git
 cd demo-ghostprovider
