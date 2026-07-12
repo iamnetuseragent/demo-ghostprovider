@@ -33,7 +33,6 @@ demo-ghostprovider
 - System scanning and analysis
 - Service management (start, stop, restart, remove)
 - Only 3 allowed repositories can be deployed
-- All other GhostProvider features remain intact
 
 ## Differences from full version
 
