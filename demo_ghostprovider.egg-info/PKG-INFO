@@ -13,6 +13,8 @@ Dynamic: license-file
 
 A demo version of GhostProvider with limited service support.
 
+![Demo GhostProvider](demo-ghostprovider.png)
+
 ## What is this
 
 This is a restricted demo version of GhostProvider that only supports deploying the following services:
@@ -26,11 +28,12 @@ All other repositories will be rejected with a clear error message.
 ## Install
 
 ```bash
+git clone https://github.com/iamnetuseragent/demo-ghostprovider.git
 cd demo-ghostprovider
-python3 -m venv .venv
-.venv/bin/pip install .
-ln -s "$(pwd)/.venv/bin/demo-ghostprovider" ~/.local/bin/demo-ghostprovider
+makepkg -si
 ```
+
+Dependencies (Git) will be installed automatically if missing.
 
 ## Usage
 
@@ -44,7 +47,6 @@ demo-ghostprovider
 - System scanning and analysis
 - Service management (start, stop, restart, remove)
 - Only 3 allowed repositories can be deployed
-- All other GhostProvider features remain intact
 
 ## Differences from full version
 

@@ -236,9 +236,6 @@ class MainScreen(Screen):
             Center(
                 Button("☰  MANAGE ACTIVE SERVICES  ☰", id="btn-services", variant="default"),
             ),
-            Center(
-                Button("            UPDATE            ", id="btn-update", variant="default"),
-            ),
             Static(
                 "[dim red]────────────────────────────────[/dim red]\n"
                 "[dim red]↑↓[/dim red] [dim]navigate  |  [/dim]"
@@ -258,8 +255,6 @@ class MainScreen(Screen):
             self.app.push_screen(AnalysisScreen())
         elif event.button.id == "btn-services":
             self.app.push_screen(ServiceListScreen())
-        elif event.button.id == "btn-update":
-            self.app.push_screen(UpdateScreen())
 
     def on_key(self, event) -> None:
         if event.key in ("escape", "left"):
@@ -270,8 +265,6 @@ class MainScreen(Screen):
                 self.app.push_screen(AnalysisScreen())
             elif focused and focused.id == "btn-services":
                 self.app.push_screen(ServiceListScreen())
-            elif focused and focused.id == "btn-update":
-                self.app.push_screen(UpdateScreen())
         elif event.key == "down":
             btns = self.query(Button)
             for i, b in enumerate(btns):
@@ -291,91 +284,6 @@ class MainScreen(Screen):
 
 
 # ── Update Screen ──────────────────────────────────────────────────
-
-def _find_repo_root() -> str | None:
-    """Find the git repo root by walking up from demo_ghostprovider module location."""
-    path = os.path.dirname(os.path.abspath(__file__))
-    while path and path != "/":
-        if os.path.isdir(os.path.join(path, ".git")):
-            return path
-        path = os.path.dirname(path)
-    return None
-
-
-class UpdateScreen(Screen):
-    BINDINGS = [
-        ("escape", "pop_screen"),
-        ("left", "pop_screen"),
-        ("enter", "pop_screen"),
-    ]
-
-    def action_pop_screen(self) -> None:
-        self.app.pop_screen()
-
-    def compose(self) -> ComposeResult:
-        yield MatrixRain(id="matrix-rain")
-
-    def on_mount(self) -> None:
-        rain = self.query_one(MatrixRain)
-        _safe_task(self._run_update(rain))
-
-    async def _run_update(self, rain: MatrixRain) -> None:
-        await rain.typewrite_status("locating repository...", speed=0.04)
-        await asyncio.sleep(0.3)
-
-        repo = await asyncio.get_event_loop().run_in_executor(None, _find_repo_root)
-
-        if not repo:
-            rain.write_fail("Repository not found", detail="ERR")
-            rain.write_fail("Install ghostprovider via git clone + pip install -e .", detail="")
-            rain.set_status("Enter — return")
-            return
-
-        await rain.typewrite_status(f"repository found at {repo}", speed=0.02)
-        await asyncio.sleep(0.2)
-        await rain.typewrite_status("fetching updates...", speed=0.04)
-        rain.set_progress(0, 3)
-
-        loop = asyncio.get_event_loop()
-
-        try:
-            rain.set_progress(1, 3)
-            result = await loop.run_in_executor(
-                None, lambda: subprocess.run(
-                    ["git", "pull"], cwd=repo, capture_output=True, text=True, timeout=30
-                )
-            )
-            rain.set_progress(2, 3)
-
-            if result.returncode != 0:
-                err = result.stderr.strip() or "git pull failed"
-                rain.write_fail(err[:200], detail="ERR")
-                rain.set_status("Enter — return")
-                return
-
-            output = result.stdout.strip()
-            if not output or "Already up to date" in output:
-                await rain.typewrite_ok("Already up to date", addr="DONE", speed=0.02)
-                rain.set_status("Enter — return")
-                return
-
-            for line in output.splitlines():
-                line = line.strip()
-                if line:
-                    await rain.typewrite_ok(line[:120], addr="", speed=0.01)
-
-            await rain.typewrite_ok("Update complete", addr="DONE", speed=0.02)
-            rain.set_progress(3, 3)
-            await asyncio.sleep(0.5)
-            rain.set_status("Updates applied — restart recommended (Esc to return)")
-
-        except subprocess.TimeoutExpired:
-            rain.write_fail("git pull timed out", detail="ERR")
-            rain.set_status("Enter — return")
-        except Exception as e:
-            rain.write_fail(str(e), detail="ERR")
-            rain.set_status("Enter — return")
-
 
 # ── Analysis Screen (Matrix rain) ─────────────────────────────────────
 

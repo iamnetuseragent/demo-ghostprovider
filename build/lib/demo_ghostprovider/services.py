@@ -132,8 +132,17 @@ def _get_unit_ports(unit_name: str) -> list[int]:
 
 
 def list_services(all_services: bool = False) -> list[ServiceInfo]:
-    """List ghostprovider-managed systemd services."""
+    """List demo-ghostprovider-managed systemd services.
+
+    Only shows services that are tracked in the state file (i.e., deployed
+    by this demo-ghostprovider instance, not the full ghostprovider).
+    """
+    from demo_ghostprovider.state import load as _load_state
     services: list[ServiceInfo] = []
+
+    # Load state to know which services belong to this demo instance
+    state = _load_state()
+    demo_services = {k for k in state.keys() if k != "version"}
 
     try:
         # Always list all ghost-prefixed services (running or stopped)
@@ -153,6 +162,10 @@ def list_services(all_services: bool = False) -> list[ServiceInfo]:
 
             # Only show ghostprovider-managed services (prefixed with ghost-)
             if not unit_name.startswith("ghost-"):
+                continue
+
+            # Demo version: only show services tracked in this instance's state
+            if unit_name not in demo_services:
                 continue
 
             status = parts[2] if len(parts) > 2 else "unknown"
