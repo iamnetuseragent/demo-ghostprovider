@@ -65,26 +65,61 @@ chmod +x "$BIN_DIR/$BIN_NAME"
 
 # ── 7. Add to PATH if needed ──
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-  # Detect shell
-  if [ -n "$ZSH_VERSION" ] || [[ "${SHELL:-}" == */zsh ]]; then
-    PROFILE="$HOME/.zshrc"
-    SHELL_NAME="zsh"
-  else
-    PROFILE="$HOME/.bashrc"
-    SHELL_NAME="bash"
-  fi
+  # Detect shell and config file
+  PROFILE=""
+  SHELL_NAME=""
+  PATH_LINE=""
 
-  warn ""
-  warn "~/.local/bin is not in your PATH."
-  read -r -p "Add PATH to $PROFILE? [Y/n] " answer
-  if [[ "$answer" != "n" && "$answer" != "N" ]]; then
-    echo '' >> "$PROFILE"
-    echo '# demo-ghostprovider' >> "$PROFILE"
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$PROFILE"
-    ok "PATH added to $PROFILE"
-    warn "Run:  source $PROFILE"
+  case "${SHELL:-}" in
+    */bash)
+      PROFILE="$HOME/.bashrc"
+      SHELL_NAME="bash"
+      PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+      ;;
+    */zsh)
+      PROFILE="$HOME/.zshrc"
+      SHELL_NAME="zsh"
+      PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+      ;;
+    */fish)
+      PROFILE="$HOME/.config/fish/config.fish"
+      SHELL_NAME="fish"
+      PATH_LINE='set -gx PATH $HOME/.local/bin $PATH'
+      ;;
+    */ksh)
+      PROFILE="$HOME/.kshrc"
+      SHELL_NAME="ksh"
+      PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+      ;;
+    */csh|*/tcsh)
+      PROFILE="$HOME/.tcshrc"
+      SHELL_NAME="tcsh"
+      PATH_LINE='setenv PATH "$HOME/.local/bin:$PATH"'
+      ;;
+    *)
+      SHELL_NAME="unknown"
+      ;;
+  esac
+
+  if [ -n "$PROFILE" ]; then
+    warn ""
+    warn "~/.local/bin is not in your PATH."
+    read -r -p "Add PATH to $PROFILE? [Y/n] " answer
+    if [[ "$answer" != "n" && "$answer" != "N" ]]; then
+      mkdir -p "$(dirname "$PROFILE")"
+      echo '' >> "$PROFILE"
+      echo '# demo-ghostprovider' >> "$PROFILE"
+      echo "$PATH_LINE" >> "$PROFILE"
+      ok "PATH added to $PROFILE"
+      warn "Run:  source $PROFILE"
+    else
+      warn "Skipped. Add manually: $PATH_LINE"
+    fi
   else
-    warn "Skipped. Add manually: export PATH=\"\$HOME/.local/bin:\$PATH\""
+    warn ""
+    warn "~/.local/bin is not in your PATH."
+    warn "Unknown shell ($SHELL). Add manually:"
+    warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
   fi
 fi
 
