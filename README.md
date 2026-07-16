@@ -28,10 +28,38 @@ This is a restricted demo version of GhostProvider that only supports deploying 
 
 ## Install (Arch Linux)
 
+### One-liner (Linux with systemd)
+
+```bash
+curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | bash
+```
+
+### Arch Linux (PKGBUILD)
+
 ```bash
 git clone https://github.com/iamnetuseragent/demo-ghostprovider.git
 cd demo-ghostprovider
 makepkg -si
+```
+
+### pipx
+
+```bash
+pipx install demo-ghostprovider
+```
+
+## Uninstall
+
+If installed via `install.sh`:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/uninstall.sh | bash
+```
+
+If installed via `pipx`:
+
+```bash
+pipx uninstall demo-ghostprovider
 ```
 
 ## Usage
