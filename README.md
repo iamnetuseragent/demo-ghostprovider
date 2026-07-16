@@ -1,5 +1,3 @@
-# GHOST PROVIDER
-
 ![GHOST PROVIDER Panel](GHOSTPROVIDER%20PANEL.JPEG)
 
 > TUI for self-hosting & localhost management.
@@ -9,6 +7,14 @@
 
 Paste a GitHub URL — get a host score — deploy as a systemd service.
 Private, local, no third parties.
+
+## System Scan
+
+Scans your machine for prerequisites, detects all listening ports, fingerprints 40+ known services (Jellyfin, SearXNG, Grafana, Nextcloud, Gitea, Vaultwarden...) and maps your network — gateway, DNS.
+
+## Control panel
+
+Full dashboard for all deployed services. Start, stop, restart, or remove — one click cleans the service, unit file, cloned repo, and lingering ports. Zero leftovers.
 
 ## Service support
 
