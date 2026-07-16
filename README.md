@@ -26,15 +26,15 @@ This is a restricted demo version of GhostProvider that only supports deploying 
 - **SearXNG** - https://github.com/searxng/searxng
 - **Memos** - https://github.com/usememos/memos
 
-## Install (Arch Linux)
-
-### One-liner (Linux with systemd)
+## Install (Quick Start)
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | bash
 ```
 
-### Arch Linux (PKGBUILD)
+Requires: Linux, systemd, Python 3.10+, git.
+
+## Install (Arch Linux)
 
 ```bash
 git clone https://github.com/iamnetuseragent/demo-ghostprovider.git
@@ -42,7 +42,7 @@ cd demo-ghostprovider
 makepkg -si
 ```
 
-### pipx
+## Install (pipx)
 
 ```bash
 pipx install demo-ghostprovider
