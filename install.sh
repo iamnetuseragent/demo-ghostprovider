@@ -63,13 +63,29 @@ exec ~/.local/share/demo-ghostprovider/.venv/bin/python3 -m demo_ghostprovider "
 LAUNCHER
 chmod +x "$BIN_DIR/$BIN_NAME"
 
-# ── 7. Check PATH ──
+# ── 7. Add to PATH if needed ──
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+  # Detect shell
+  if [ -n "$ZSH_VERSION" ] || [[ "${SHELL:-}" == */zsh ]]; then
+    PROFILE="$HOME/.zshrc"
+    SHELL_NAME="zsh"
+  else
+    PROFILE="$HOME/.bashrc"
+    SHELL_NAME="bash"
+  fi
+
   warn ""
-  warn "Add this to your ~/.bashrc or ~/.zshrc:"
-  warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
-  warn ""
-  warn "Then run:  source ~/.bashrc"
+  warn "~/.local/bin is not in your PATH."
+  read -r -p "Add PATH to $PROFILE? [Y/n] " answer
+  if [[ "$answer" != "n" && "$answer" != "N" ]]; then
+    echo '' >> "$PROFILE"
+    echo '# demo-ghostprovider' >> "$PROFILE"
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$PROFILE"
+    ok "PATH added to $PROFILE"
+    warn "Run:  source $PROFILE"
+  else
+    warn "Skipped. Add manually: export PATH=\"\$HOME/.local/bin:\$PATH\""
+  fi
 fi
 
 ok ""
