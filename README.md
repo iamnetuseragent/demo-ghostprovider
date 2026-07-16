@@ -32,18 +32,18 @@ This is a restricted demo version of GhostProvider that only supports deploying 
 curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | bash
 ```
 
+## Uninstall
+
+```bash
+curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/uninstall.sh | bash
+```
+
 ## Install (Arch Linux)
 
 ```bash
 git clone https://github.com/iamnetuseragent/demo-ghostprovider.git
 cd demo-ghostprovider
 makepkg -si
-```
-
-## Uninstall
-
-```bash
-curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/uninstall.sh | bash
 ```
 
 ## Usage
