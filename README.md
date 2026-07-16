@@ -1,10 +1,16 @@
-# Demo GhostProvider
+# GHOST PROVIDER
 
-A demo version of GhostProvider with limited service support.
+![GHOST PROVIDER Panel](GHOSTPROVIDER%20PANEL.JPEG)
 
-![Demo GhostProvider](demo-ghostprovider.png)
+> TUI for self-hosting & localhost management.
+> Your data stays yours — local, private, under your control.
 
-## What is this
+## One-Click Deploy
+
+Paste a GitHub URL — get a host score — deploy as a systemd service.
+Private, local, no third parties.
+
+## Service support
 
 This is a restricted demo version of GhostProvider that only supports deploying the following services:
 
@@ -12,9 +18,7 @@ This is a restricted demo version of GhostProvider that only supports deploying 
 - **SearXNG** - https://github.com/searxng/searxng
 - **Memos** - https://github.com/usememos/memos
 
-All other repositories will be rejected with a clear error message.
-
-## Install
+## Install (Arch Linux)
 
 ```bash
 git clone https://github.com/iamnetuseragent/demo-ghostprovider.git
@@ -27,20 +31,3 @@ makepkg -si
 ```bash
 demo-ghostprovider
 ```
-
-## Features
-
-- Full TUI interface with cyberpunk theme
-- System scanning and analysis
-- Service management (start, stop, restart, remove)
-- Only 3 allowed repositories can be deployed
-
-## Differences from full version
-
-- Restricted to 3 specific repositories
-- Config stored in `~/.config/demo-ghostprovider/`
-- Entry point: `demo-ghostprovider`
-
-## License
-
-MIT
