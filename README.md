@@ -40,24 +40,10 @@ cd demo-ghostprovider
 makepkg -si
 ```
 
-## Install (pipx)
-
-```bash
-pipx install demo-ghostprovider
-```
-
 ## Uninstall
-
-If installed via `install.sh`:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/uninstall.sh | bash
-```
-
-If installed via `pipx`:
-
-```bash
-pipx uninstall demo-ghostprovider
 ```
 
 ## Usage
