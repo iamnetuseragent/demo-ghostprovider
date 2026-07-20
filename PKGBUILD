@@ -4,7 +4,7 @@ pkgrel=1
 pkgdesc="Demo version: TUI for self-hosting & localhost management (limited to 3 services)"
 arch=('any')
 url="https://github.com/iamnetuseragent/demo-ghostprovider"
-license=('MIT')
+license=('custom:Source-Available')
 depends=('python' 'git' 'python-pip')
 makedepends=('git')
 # Pinned to commit b152865 — update pkgver and sha256sums on each release
