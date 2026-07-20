@@ -47,7 +47,12 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
 
 ## System Scan
 
-Scans your machine for prerequisites, detects all listening ports, fingerprints known services (VERT, SearXNG, Memos...) and maps your network — gateway, DNS.
+Before deploying a new service, GhostProvider checks what's already running on your machine:
+- **Prerequisites** — do you have Python, systemd, git installed?
+- **Listening ports** — which ports are already in use?
+- **Known services** — is SearXNG, Memos, or another app already running?
+
+This avoids port conflicts and helps GhostProvider choose the right deployment strategy. All data stays on your machine — nothing is sent anywhere.
 
 ## Control panel
 
