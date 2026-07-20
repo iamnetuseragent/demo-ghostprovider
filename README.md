@@ -10,6 +10,31 @@ Private, local, no third parties.
 
 ![Demo GhostProvider](demo-ghostprovider.png)
 
+## Requirements
+
+- Python 3.10+
+- systemd (user-level)
+- git
+- Linux (tested on Arch, Ubuntu, Fedora)
+
+## Tech Stack
+
+- Python 3.10+ / [Textual](https://github.com/Textualize/textual) (TUI framework)
+- systemd (user-level service management)
+- requests (GitHub API interaction)
+
+## Security Model
+
+- **All data stays local** — no telemetry, no external requests beyond GitHub API
+- **No root required** — services run as systemd user-level units
+- **Sudo requested only for:** package installation (apt/pacman)
+- **Password handled securely** — verified locally via `sudo -S`, never stored on disk
+- **Service sandboxing:**
+  - `NoNewPrivileges=yes` — prevents privilege escalation
+  - `ProtectHome=read-only` — no write access to home directory
+  - `ProtectSystem=read-only` — read-only filesystem except working directory
+  - `ReadWritePaths` — restricted to deployed project directory only
+
 ## System Scan
 
 Scans your machine for prerequisites, detects all listening ports, fingerprints 40+ known services (Jellyfin, SearXNG, Grafana, Nextcloud, Gitea, Vaultwarden...) and maps your network — gateway, DNS.
