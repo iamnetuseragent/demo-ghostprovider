@@ -37,7 +37,7 @@ Private, local, no third parties.
 
 ## System Scan
 
-Scans your machine for prerequisites, detects all listening ports, fingerprints 40+ known services (Jellyfin, SearXNG, Grafana, Nextcloud, Gitea, Vaultwarden...) and maps your network — gateway, DNS.
+Scans your machine for prerequisites, detects all listening ports, fingerprints known services (VERT, SearXNG, Memos...) and maps your network — gateway, DNS.
 
 ## Control panel
 
