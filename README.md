@@ -23,6 +23,16 @@ Private, local, no third parties.
 - systemd (user-level service management)
 - requests (GitHub API interaction)
 
+## Why systemd?
+
+GhostProvider uses systemd user-level services because they provide:
+- **No root required** — every user can manage their own services
+- **Auto-start on login** — services survive reboots without manual config
+- **Clean removal** — `systemctl --user disable` + delete unit file = zero leftovers
+- **Sandboxing** — built-in security directives (NoNewPrivileges, ProtectHome, ProtectSystem)
+
+This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux distributions.
+
 ## Security Model
 
 - **All data stays local** — no telemetry, no external requests beyond GitHub API
