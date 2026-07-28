@@ -1,8 +1,15 @@
-"""Entry point for `demo-ghostprovider` command and `python -m demo_ghostprovider`."""
+"""Entry point for `demo_ghostprovider` command and `python -m demo_ghostprovider`."""
+
+import logging
+
 
 def run() -> None:
-    from demo_ghostprovider.app import DemoGhostProviderApp
-    app = DemoGhostProviderApp()
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(name)s %(levelname)s: %(message)s",
+    )
+    from demo_ghostprovider.app import GhostProviderApp
+    app = GhostProviderApp()
     app.run()
 
 

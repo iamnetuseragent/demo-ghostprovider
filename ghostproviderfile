@@ -1,0 +1,37 @@
+# GhostProvider Service Definitions
+# Format: [service-name]
+#   repo = <github-url>
+#   strategy = <python|node|go|rust|static|openwebui>
+#   port = <default-port>
+#   build = <build-command>  (optional)
+#   start = <start-command>  (optional)
+#   health = <health-url>    (optional)
+#   env = <key=value>        (optional, repeatable)
+
+[VERT]
+repo = https://github.com/VERT-sh/VERT
+strategy = node
+port = 3000
+build = bun run build
+health = /
+
+[SearXNG]
+repo = https://github.com/searxng/searxng
+strategy = python
+port = 8080
+start = python -m searx.webapp
+health = /
+
+[Memos]
+repo = https://github.com/usememos/memos
+strategy = go
+port = 8300
+build = cd web && pnpm install --no-frozen-lockfile && pnpm run release && cd .. && go build -o ghost-server ./cmd/memos
+start = ./ghost-server --port 8300
+health = /api/v1/status
+
+[OpenWebUI]
+repo = https://github.com/open-webui/open-webui
+strategy = openwebui
+port = 8080
+health = /

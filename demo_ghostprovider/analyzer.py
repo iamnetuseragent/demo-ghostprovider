@@ -1,4 +1,4 @@
-"""System & environment analysis for ghostprovider."""
+"""System & environment analysis for demo_ghostprovider."""
 
 import re
 import subprocess
@@ -195,11 +195,10 @@ SERVICE_SIGNATURES: list[tuple[re.Pattern, str, str, int]] = [
 def fingerprint_port(port: int, proto: str = "tcp") -> ServiceFingerprint | None:
     """Try to fingerprint an HTTP service on a given port."""
     try:
-        sock = socket.create_connection(("127.0.0.1", port), timeout=3)
-        sock.settimeout(5)
-        sock.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
-        response = sock.recv(8192)
-        sock.close()
+        with socket.create_connection(("127.0.0.1", port), timeout=3) as sock:
+            sock.settimeout(5)
+            sock.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            response = sock.recv(8192)
     except (OSError, socket.timeout):
         return None
 
@@ -302,15 +301,13 @@ def _check_cmd(name: str) -> bool:
 
 def _check_localhost() -> bool:
     try:
-        sock = socket.create_connection(("127.0.0.1", 80), timeout=2)
-        sock.close()
-        return True
+        with socket.create_connection(("127.0.0.1", 80), timeout=2):
+            return True
     except (OSError, ConnectionRefusedError):
         pass
     try:
-        sock = socket.create_connection(("127.0.0.1", 8080), timeout=2)
-        sock.close()
-        return True
+        with socket.create_connection(("127.0.0.1", 8080), timeout=2):
+            return True
     except (OSError, ConnectionRefusedError):
         return False
 

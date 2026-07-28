@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "demo-ghostprovider"
 version = "1.2.0"
-description = "Demo version: TUI for self-hosting & localhost management (limited to 3 services)"
+description = "TUI for self-hosting & localhost management"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

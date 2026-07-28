@@ -1,8 +1,11 @@
-"""Cyberpunk-themed screens for demo-ghostprovider."""
+"""Cyberpunk-themed screens for demo_ghostprovider."""
 
 import asyncio
+import logging
 import os
 import random
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -28,14 +31,13 @@ from demo_ghostprovider.services import (
     remove_service,
     wait_service_ready, service_urls,
 )
-from demo_ghostprovider.installer import (
-    required_tools, missing_tools, install_tools, tool_description,
-    detect_pm, is_installed,
-)
 
 
 def _hex() -> str:
     return f"0x{random.randint(0x1000, 0xFFFF):04x}"
+
+
+logger = logging.getLogger("demo_ghostprovider")
 
 
 def _safe_task(coro) -> asyncio.Task:
@@ -49,8 +51,7 @@ def _safe_task(coro) -> asyncio.Task:
         except asyncio.CancelledError:
             pass
         except Exception:
-            import traceback
-            traceback.print_exc()
+            logger.exception("Background task failed")
 
     task.add_done_callback(_done_cb)
     return task
@@ -224,7 +225,13 @@ class MainScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Vertical(
             Static(
-                "[bold yellow]⎈ DEMO PROJECT ⎈[/bold yellow]\n\n"
+                "[bold magenta]═══════════════════════════[/bold magenta]\n"
+                "[bold magenta]    DEMO PROJECT[/bold magenta]\n"
+                "[bold magenta]═══════════════════════════[/bold magenta]",
+                id="demo-banner",
+            ),
+            Static(
+                "[bold yellow]⎈ SYSTEM READY ⎈[/bold yellow]\n\n"
                 "[red]Your data is your life.\n"
                 "Fail to protect it, and you fail to protect your future.\n"
                 "Only you decide what that future will be.[/red]",
@@ -235,6 +242,9 @@ class MainScreen(Screen):
             ),
             Center(
                 Button("☰  MANAGE ACTIVE SERVICES  ☰", id="btn-services", variant="default"),
+            ),
+            Center(
+                Button("            UPDATE            ", id="btn-update", variant="default"),
             ),
             Static(
                 "[dim red]────────────────────────────────[/dim red]\n"
@@ -255,6 +265,8 @@ class MainScreen(Screen):
             self.app.push_screen(AnalysisScreen())
         elif event.button.id == "btn-services":
             self.app.push_screen(ServiceListScreen())
+        elif event.button.id == "btn-update":
+            self.app.push_screen(UpdateScreen())
 
     def on_key(self, event) -> None:
         if event.key in ("escape", "left"):
@@ -265,6 +277,8 @@ class MainScreen(Screen):
                 self.app.push_screen(AnalysisScreen())
             elif focused and focused.id == "btn-services":
                 self.app.push_screen(ServiceListScreen())
+            elif focused and focused.id == "btn-update":
+                self.app.push_screen(UpdateScreen())
         elif event.key == "down":
             btns = self.query(Button)
             for i, b in enumerate(btns):
@@ -284,6 +298,114 @@ class MainScreen(Screen):
 
 
 # ── Update Screen ──────────────────────────────────────────────────
+
+def _find_repo_root() -> str | None:
+    """Find the git repo root by walking up from demo_ghostprovider module location."""
+    path = os.path.dirname(os.path.abspath(__file__))
+    while path and path != "/":
+        if os.path.isdir(os.path.join(path, ".git")):
+            return path
+        path = os.path.dirname(path)
+    return None
+
+
+class UpdateScreen(Screen):
+    BINDINGS = [
+        ("escape", "pop_screen"),
+        ("left", "pop_screen"),
+    ]
+
+    def action_pop_screen(self) -> None:
+        self.app.pop_screen()
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            MatrixRain(id="matrix-rain"),
+            Center(
+                Button("  ← BACK  ", id="update-back", variant="default"),
+                id="update-btn-container",
+            ),
+            id="update-container",
+        )
+
+    def on_mount(self) -> None:
+        btn = self.query_one("#update-back", Button)
+        btn.visible = False
+        _safe_task(self._run_update())
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "update-back":
+            self.app.pop_screen()
+
+    async def _run_update(self) -> None:
+        rain = self.query_one(MatrixRain)
+        btn = self.query_one("#update-back", Button)
+
+        await rain.typewrite_status("locating repository...", speed=0.04)
+        await asyncio.sleep(0.3)
+
+        repo = await asyncio.get_running_loop().run_in_executor(None, _find_repo_root)
+
+        if not repo:
+            rain.write_fail("Repository not found", detail="ERR")
+            rain.write_fail("Install demo_ghostprovider via git clone + pip install -e .", detail="")
+            rain.set_status("")
+            btn.visible = True
+            btn.focus()
+            return
+
+        await rain.typewrite_status(f"repository found at {repo}", speed=0.02)
+        await asyncio.sleep(0.2)
+        await rain.typewrite_status("fetching updates...", speed=0.04)
+        rain.set_progress(0, 3)
+
+        loop = asyncio.get_running_loop()
+
+        try:
+            rain.set_progress(1, 3)
+            result = await loop.run_in_executor(
+                None, lambda: subprocess.run(
+                    ["git", "pull"], cwd=repo, capture_output=True, text=True, timeout=30
+                )
+            )
+            rain.set_progress(2, 3)
+
+            if result.returncode != 0:
+                err = result.stderr.strip() or "git pull failed"
+                rain.write_fail(err[:200], detail="ERR")
+                rain.set_status("")
+                btn.visible = True
+                btn.focus()
+                return
+
+            output = result.stdout.strip()
+            if not output or "Already up to date" in output:
+                await rain.typewrite_ok("Already up to date", addr="DONE", speed=0.02)
+                rain.set_status("")
+                btn.visible = True
+                btn.focus()
+                return
+
+            for line in output.splitlines():
+                line = line.strip()
+                if line:
+                    await rain.typewrite_ok(line[:120], addr="", speed=0.01)
+
+            await rain.typewrite_ok("Update complete", addr="DONE", speed=0.02)
+            rain.set_progress(3, 3)
+            await asyncio.sleep(0.5)
+            rain.set_status("")
+
+        except subprocess.TimeoutExpired:
+            rain.write_fail("git pull timed out", detail="ERR")
+            rain.set_status("")
+        except Exception as e:
+            rain.write_fail(str(e), detail="ERR")
+            rain.set_status("")
+
+        btn.visible = True
+        btn.focus()
+
 
 # ── Analysis Screen (Matrix rain) ─────────────────────────────────────
 
@@ -361,7 +483,7 @@ class AnalysisScreen(Screen):
         self._result = result
 
     async def _run_analysis_thread(self) -> AnalysisResult:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, run_analysis)
 
     def on_key(self, event) -> None:
@@ -386,6 +508,7 @@ class GithubScreen(Screen):
                 placeholder="https://github.com/user/repository",
                 id="github-input",
             ),
+            Static("", id="github-status"),
             Center(
                 Static(
                     "[dim red]Enter[/dim red] [dim]analyse  |  [/dim]"
@@ -400,9 +523,20 @@ class GithubScreen(Screen):
         self.query_one("#github-input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        from demo_ghostprovider.service_defs import get_service_def
         url = event.value.strip()
-        if url:
-            self.app.push_screen(WorkDirPromptScreen(url=url))
+        if not url:
+            return
+        svc_def = get_service_def(url)
+        if svc_def is None:
+            status = self.query_one("#github-status", Static)
+            status.update(
+                "[bold red]REPO NOT SUPPORTED[/bold red]\n"
+                "[dim]Only VERT, SearXNG, Memos and Open WebUI are available in demo.[/dim]"
+            )
+            return
+        self.query_one("#github-status", Static).update("")
+        self.app.push_screen(WorkDirPromptScreen(url=url))
 
     def on_key(self, event) -> None:
         if event.key in ("escape", "left"):
@@ -464,7 +598,7 @@ class WorkDirPromptScreen(Screen):
                 ),
             ),
             Input(
-                placeholder="~/ghostprovider (Enter — confirm, Esc — back)",
+                placeholder="~/demo_ghostprovider (Enter — confirm, Esc — back)",
                 id="wd-input",
             ),
             Center(
@@ -501,8 +635,6 @@ class WorkDirPromptScreen(Screen):
         except Exception:
             pass
         event.stop()
-
-
 # ── Result Screen ───────────────────────────────────────────────────
 
 class RepoResultScreen(Screen):
@@ -518,8 +650,7 @@ class RepoResultScreen(Screen):
         self._url = url
         self._work_dir = work_dir
         self._deploy_result = None
-        self._sudo_password = None
-        self._install_tools = []
+        self._sudo_password: bytearray | None = None
         super().__init__()
 
     def compose(self) -> ComposeResult:
@@ -531,7 +662,7 @@ class RepoResultScreen(Screen):
 
     def _ask_confirm(self, msg: str) -> asyncio.Future:
         """Push a ConfirmModal and return a Future that resolves to bool."""
-        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
 
         def _cb(confirmed: bool) -> None:
             fut.set_result(confirmed)
@@ -541,7 +672,7 @@ class RepoResultScreen(Screen):
 
     def _ask_sudo(self) -> asyncio.Future:
         """Push a SudoPrompt and return a Future that resolves to str | None."""
-        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
 
         def _cb(password: str | None) -> None:
             fut.set_result(password)
@@ -554,7 +685,7 @@ class RepoResultScreen(Screen):
         await asyncio.sleep(0.3)
 
         # Pre-check: git must be installed before we can clone
-        if not is_installed("git"):
+        if not shutil.which("git"):
             rain.write_fail("Git is not installed", detail="ERR")
             rain.write_fail("install git and try again", detail="ERR")
             rain.set_status("Enter — return")
@@ -563,7 +694,7 @@ class RepoResultScreen(Screen):
         await rain.typewrite_status("cloning repository...", speed=0.04)
         await asyncio.sleep(0.2)
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             result = await loop.run_in_executor(
                 None, lambda: analyze_repo(self._url, work_dir=self._work_dir),
@@ -656,63 +787,17 @@ class RepoResultScreen(Screen):
             await rain.typewrite_ok(f"{label}  {score_str}", addr="", speed=0.02)
             await rain.typewrite_ok(result.host_recommendation, addr="", speed=0.02)
             rain.set_progress(5, 5)
-
-            need = required_tools(
-                result.has_package_json, result.has_requirements,
-                result.has_go_mod, result.has_cargo,
-                result.has_index,
+            rain.set_status(
+                "══ ENTER — LAUNCH ══   (Esc — back)"
             )
-            miss = missing_tools(need)
-
-            if miss:
-                await rain.typewrite_status("detecting missing dependencies...", speed=0.03)
-                for t in miss:
-                    rain.write_fail(tool_description(t), detail="MISS")
-                rain.set_status(
-                    "══ ENTER — INSTALL AND LAUNCH ══   (Esc — cancel)"
-                )
-                self._install_tools = miss
-            else:
-                rain.set_status(
-                    "══ ENTER — LAUNCH ══   (Esc — back)"
-                )
-                self._install_tools = []
         else:
             rain.write_fail("✗ TARGET INCOMPATIBLE", detail="")
             rain.write_fail(result.reason, detail="")
             rain.set_status("Enter — return")
-            self._install_tools = []
 
         self._repo_result = result
 
-    async def _do_install_and_deploy(self, result: RepoAnalysis, password: str | None = None) -> None:
-        rain = self.query_one(MatrixRain)
-        rain.set_status("══ INSTALLING DEPENDENCIES... ══")
-        await rain.typewrite_ok("installing dependencies...", addr="INST", speed=0.02)
-        for t in self._install_tools:
-            await rain.typewrite_ok(tool_description(t), addr="INST", speed=0.01)
-
-        loop = asyncio.get_event_loop()
-        failed, warnings = await loop.run_in_executor(
-            None, lambda: install_tools(self._install_tools, password=password)
-        )
-
-        if failed:
-            rain.write_fail("FAILED TO INSTALL:", detail="ERR")
-            for t in failed:
-                rain.write_fail(tool_description(t), detail="ERR")
-            rain.write_fail("install manually and try again", detail="ERR")
-            rain.set_status("Enter — return")
-            self._install_tools = []
-            return
-
-        await rain.typewrite_ok("dependencies installed", addr="DONE", speed=0.02)
-        for w in warnings:
-            await rain.typewrite_ok(w, addr="WARN", speed=0.01)
-        await asyncio.sleep(0.3)
-        self._start_hosting(result)
-
-    def _start_hosting(self, result: RepoAnalysis, sudo_password: str | None = None) -> None:
+    def _start_hosting(self, result: RepoAnalysis, sudo_password: bytearray | None = None) -> None:
         wd = getattr(self, "_work_dir", None)
         self.app.push_screen(HostingScreen(result=result, work_dir=wd, sudo_password=sudo_password))
 
@@ -731,21 +816,11 @@ class RepoResultScreen(Screen):
         result = self._deploy_result
         if result is None:
             return
-        if self._install_tools:
-            lines = "\n".join(f"• {tool_description(t)}" for t in self._install_tools)
-            msg = f"[yellow]Ghostprovider will install:[/yellow]\n{lines}\n\n[dim](requires sudo)[/dim]"
-            self._sudo_password = password
-            self.app.push_screen(ConfirmModal(msg), self._on_install_confirm)
-        else:
-            self._start_hosting(result, sudo_password=password)
-
-    def _on_install_confirm(self, confirmed: bool) -> None:
-        if confirmed and self._deploy_result:
-            _safe_task(self._do_install_and_deploy(self._deploy_result, self._sudo_password))
-        else:
-            self._install_tools = []
-            rain = self.query_one(MatrixRain)
-            rain.set_status("══ INSTALLATION CANCELLED ══   (Esc — back)")
+        # Store password as bytearray for secure handling
+        self._sudo_password = bytearray(password, "utf-8")
+        # Zero the original string from memory
+        password = None
+        self._start_hosting(result, sudo_password=self._sudo_password)
 
     def _on_nonweb_confirm(self, confirmed: bool) -> None:
         if confirmed and hasattr(self, "_repo_result"):
@@ -865,7 +940,7 @@ class SudoVerifyScreen(Screen):
         _safe_task(self._verify(password))
 
     async def _verify(self, password: str) -> None:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         ok = await loop.run_in_executor(None, self._verify_sudo, password)
         status = self.query_one("#sudo-verify-status", Static)
         if ok:
@@ -920,7 +995,7 @@ class HostingScreen(Screen):
     def action_pop_screen(self) -> None:
         self.app.pop_screen()
 
-    def __init__(self, result: RepoAnalysis, work_dir: str | None = None, sudo_password: str | None = None):
+    def __init__(self, result: RepoAnalysis, work_dir: str | None = None, sudo_password: bytearray | None = None):
         self._result = result
         self._work_dir = work_dir
         self._sudo_password = sudo_password
@@ -951,7 +1026,7 @@ class HostingScreen(Screen):
         await asyncio.sleep(0.3)
         prog.update(progress=1)
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         try:
             # Pre-flight checks
@@ -993,6 +1068,12 @@ class HostingScreen(Screen):
                     sudo_password=self._sudo_password,
                 ),
             )
+
+            # Zero the password after use
+            if self._sudo_password:
+                for i in range(len(self._sudo_password)):
+                    self._sudo_password[i] = 0
+                self._sudo_password = None
 
             # If no services were created (clone failed etc.), show errors and bail
             if not host_result.service_names:
@@ -1056,7 +1137,7 @@ class HostingScreen(Screen):
 
     def _ask_confirm(self, msg: str) -> asyncio.Future:
         """Push a ConfirmModal and return a Future that resolves to bool."""
-        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
 
         def _cb(confirmed: bool) -> None:
             fut.set_result(confirmed)
@@ -1066,7 +1147,7 @@ class HostingScreen(Screen):
 
     def _ask_sudo(self) -> asyncio.Future:
         """Push a SudoPrompt and return a Future that resolves to str | None."""
-        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
 
         def _cb(password: str | None) -> None:
             fut.set_result(password)
@@ -1220,7 +1301,7 @@ class ServiceListScreen(Screen):
             if show_all is None:
                 show_all = getattr(self, "_show_all", False)
             self._show_all = show_all
-            self._containers = await asyncio.get_event_loop().run_in_executor(
+            self._containers = await asyncio.get_running_loop().run_in_executor(
                 None, list_services, show_all
             )
             self._pending.clear()
@@ -1381,7 +1462,7 @@ class ServiceListScreen(Screen):
                 pass
 
     async def _exec_action(self, action: str, name: str) -> None:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             if action == "start":
                 msg = await loop.run_in_executor(None, start_service, name)
@@ -1400,7 +1481,7 @@ class ServiceListScreen(Screen):
         await self._refresh()
 
     async def _exec_restart(self, name: str) -> None:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             msg = await loop.run_in_executor(None, restart_service, name)
             await loop.run_in_executor(None, wait_service_ready, name)
@@ -1457,14 +1538,13 @@ class ServiceListScreen(Screen):
             _safe_task(self._exec_remove(name))
 
     async def _exec_remove(self, name: str) -> None:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             for c in (getattr(self, "_containers", None) or []):
                 if c.name == name:
                     # Try to get repo URL from service description
                     repo_url = ""
                     if hasattr(c, "exec_start") and "github.com" in c.exec_start:
-                        import re
                         m = re.search(r'https?://github\.com/\S+', c.exec_start)
                         if m:
                             repo_url = m.group(0)
@@ -1486,7 +1566,7 @@ class ServiceListScreen(Screen):
     async def _exec_reinstall(self, name: str, repo_url: str) -> None:
         if hasattr(self, "app") and self.app:
             self.app.notify(f"Reinstalling {name} from {repo_url}...", timeout=5)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             await loop.run_in_executor(None, remove_service, name)
         except Exception:

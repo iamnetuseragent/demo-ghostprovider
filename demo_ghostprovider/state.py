@@ -1,8 +1,12 @@
 """Persistent deployment state — maps service names to clone paths."""
 
+import fcntl
 import json
 import os
+import logging
 from pathlib import Path
+
+logger = logging.getLogger("demo_ghostprovider.state")
 
 STATE_DIR = Path.home() / ".config" / "demo-ghostprovider"
 STATE_FILE = STATE_DIR / "state.json"
@@ -23,32 +27,56 @@ def _migrate(state: dict) -> dict:
 
 
 def _migrate_v0_to_v1(state: dict) -> dict:
-    """Migrate from unversioned format to version 1.
-
-    v0 was a flat dict of {service_name: {clone_path, repo_url}}.
-    v1 adds a top-level "version" key. No data changes needed.
-    """
+    """Migrate from unversioned format to version 1."""
     return state
 
 
 def load() -> dict[str, dict[str, str]]:
+    """Load state with file locking."""
     _ensure_state_dir()
-    if STATE_FILE.exists():
-        try:
-            state = json.loads(STATE_FILE.read_text())
-            return _migrate(state)
-        except (json.JSONDecodeError, OSError):
+    if not STATE_FILE.exists():
+        return {}
+    fd = -1
+    try:
+        fd = os.open(str(STATE_FILE), os.O_RDONLY)
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        size = os.fstat(fd).st_size
+        if size == 0:
             return {}
-    return {}
+        content = os.read(fd, size).decode("utf-8")
+        state = json.loads(content)
+        return _migrate(state)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to load state: %s", e)
+        return {}
+    finally:
+        if fd >= 0:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def save(state: dict[str, dict[str, str]]) -> None:
+    """Save state with file locking."""
     _ensure_state_dir()
     state["version"] = CURRENT_VERSION
+    fd = -1
     try:
-        STATE_FILE.write_text(json.dumps(state, indent=2))
-    except OSError:
-        pass
+        fd = os.open(str(STATE_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        data = json.dumps(state, indent=2).encode("utf-8")
+        os.write(fd, data)
+    except OSError as e:
+        logger.error("Failed to save state: %s", e)
+    finally:
+        if fd >= 0:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def register(service_name: str, clone_path: str, repo_url: str) -> None:
