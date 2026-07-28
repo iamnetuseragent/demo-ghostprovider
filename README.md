@@ -8,7 +8,7 @@
 Paste a GitHub URL — get a host score — deploy as a systemd service.
 Private, local, no third parties.
 
-![Demo GhostProvider](demo-ghostprovider.png)
+![Demo GhostProvider](ghostprovider.png)
 
 ## Requirements
 
