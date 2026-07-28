@@ -1,7 +1,7 @@
 pkgname=demo-ghostprovider
 pkgver=1.2.0
 pkgrel=1
-pkgdesc="Demo version: TUI for self-hosting & localhost management (limited to 3 services)"
+pkgdesc="TUI for self-hosting & localhost management"
 arch=('any')
 url="https://github.com/iamnetuseragent/demo-ghostprovider"
 license=('custom:Source-Available')

@@ -1,12 +1,46 @@
-"""systemd service discovery and management for ghostprovider."""
+"""systemd service discovery and management for demo_ghostprovider."""
 
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import time
 from dataclasses import dataclass
+
+
+def _parse_host_port(addr: str) -> str | None:
+    """Extract port from a host:port address string."""
+    if not addr:
+        return None
+    # Handle [ipv6]:port
+    m = re.search(r"\]:(\d+)$", addr)
+    if m:
+        return m.group(1)
+    # Handle :::port or 0.0.0.0:port
+    parts = addr.rsplit(":", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        return parts[1]
+    # Plain port number
+    if addr.isdigit():
+        return addr
+    return None
+
+
+def container_urls(port_mappings: str) -> list[str]:
+    """Parse Docker-style port mapping string and return HTTP URLs."""
+    urls: list[str] = []
+    for part in port_mappings.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        # Format: "0.0.0.0:3000->3000/tcp" or "3000->3000/tcp"
+        m = re.search(r":?(\d+)->", part)
+        if m:
+            host_port = m.group(1)
+            urls.append(f"http://localhost:{host_port}")
+    return urls
 
 
 @dataclass
@@ -132,20 +166,23 @@ def _get_unit_ports(unit_name: str) -> list[int]:
 
 
 def list_services(all_services: bool = False) -> list[ServiceInfo]:
-    """List demo-ghostprovider-managed systemd services.
+    """List services that demo_ghostprovider can manage.
 
-    Only shows services that are tracked in the state file (i.e., deployed
-    by this demo-ghostprovider instance, not the full ghostprovider).
+    Shows:
+    - ghost-* services tracked in state (deployed by demo_ghostprovider)
+    - Any other service that has listening ports (web services deployed manually)
+
+    Skips system daemons (dbus, pipewire, gpg-agent, etc.) that don't serve HTTP.
     """
     from demo_ghostprovider.state import load as _load_state
     services: list[ServiceInfo] = []
 
-    # Load state to know which services belong to this demo instance
+    # Load state to know which services belong to this instance
     state = _load_state()
-    demo_services = {k for k in state.keys() if k != "version"}
+    gp_services = {k for k in state.keys() if k != "version"}
 
     try:
-        # Always list all ghost-prefixed services (running or stopped)
+        # List all user-level services (running or stopped)
         cmd = ["systemctl", "--user", "list-units", "--type=service", "--plain", "--no-legend",
                "--all"]
 
@@ -160,16 +197,17 @@ def list_services(all_services: bool = False) -> list[ServiceInfo]:
 
             unit_name = parts[0].replace(".service", "")
 
-            # Only show ghostprovider-managed services (prefixed with ghost-)
-            if not unit_name.startswith("ghost-"):
-                continue
+            # Get ports first to decide if this is a web service
+            ports = _get_unit_ports(unit_name)
 
-            # Demo version: only show services tracked in this instance's state
-            if unit_name not in demo_services:
+            # Only show ghost-* services tracked in state (deployed by demo-ghostprovider)
+            is_ghost_managed = unit_name.startswith("ghost-") and unit_name in gp_services
+
+            if not is_ghost_managed:
                 continue
 
             status = parts[2] if len(parts) > 2 else "unknown"
-            state = parts[3] if len(parts) > 3 else "unknown"
+            state_val = parts[3] if len(parts) > 3 else "unknown"
 
             # Get description
             desc = _get_unit_property(unit_name, "Description")
@@ -177,23 +215,17 @@ def list_services(all_services: bool = False) -> list[ServiceInfo]:
             # Get exec start command
             exec_start = _get_unit_property(unit_name, "ExecStart")
 
-            # Get ports
-            ports = _get_unit_ports(unit_name)
-
-            # Build extra URLs for known multi-endpoint services
+            # Build URLs from ports
             urls: list[str] = []
-            desc_lower = desc.lower()
-            if "affine" in desc_lower:
-                for port in ports:
-                    if port > 0:
-                        urls.append(f"http://localhost:{port}")
-                        urls.append(f"http://localhost:{port}/admin")
+            for port in ports:
+                if port > 0:
+                    urls.append(f"http://localhost:{port}")
 
             services.append(ServiceInfo(
                 name=unit_name,
                 unit_name=unit_name,
                 status=status,
-                state=state,
+                state=state_val,
                 description=desc,
                 ports=ports,
                 exec_start=exec_start,
@@ -223,6 +255,9 @@ def service_urls(service: ServiceInfo) -> list[str]:
 
 def _exec_systemd_action(action: str, unit_name: str) -> str:
     """Execute a systemd action on a unit."""
+    # Validate unit name to prevent injection
+    if not re.match(r'^[A-Za-z0-9_\-.]+$', unit_name):
+        return f"Invalid unit name: {unit_name}"
     try:
         result = subprocess.run(
             ["systemctl", "--user", action, unit_name],
@@ -281,80 +316,8 @@ def _extract_working_dir(unit_file: str) -> str | None:
     return None
 
 
-def _is_affine_service(name: str, working_dir: str | None, exec_start: str) -> bool:
-    """Detect if a service is an AFFiNE deployment."""
-    # Check unit file description
-    unit_file = os.path.expanduser(f"~/.config/systemd/user/{name}.service")
-    if os.path.isfile(unit_file):
-        try:
-            with open(unit_file) as f:
-                content = f.read()
-                if "AFFiNE" in content:
-                    return True
-        except OSError:
-            pass
-    # Check working directory path
-    if working_dir and "affine" in working_dir.lower():
-        return True
-    # Check clone path from state
-    from demo_ghostprovider.state import get_clone_path
-    cp = get_clone_path(name)
-    if cp and "affine" in cp.lower():
-        return True
-    return False
-
-
-def _cleanup_affine_db() -> str | None:
-    """Drop AFFiNE PostgreSQL user and database. Returns summary string."""
-    db_user = "affine"
-    db_name = "affine"
-    results = []
-
-    # Try password auth first, fall back to sudo
-    for cmd_base in (
-        ["psql", "-U", "postgres", "-h", "localhost"],
-        ["sudo", "-u", "postgres", "psql", "-h", "localhost"],
-    ):
-        try:
-            r = subprocess.run(
-                cmd_base + ["-c", f"DROP DATABASE IF EXISTS {db_name};"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if r.returncode == 0:
-                results.append("database dropped")
-                subprocess.run(
-                    cmd_base + ["-c", f"DROP USER IF EXISTS {db_user};"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                results.append("user dropped")
-                break
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-
-    # Clean up AFFiNE data directory
-    affine_home = os.path.expanduser("~/.affine")
-    if os.path.isdir(affine_home):
-        try:
-            shutil.rmtree(affine_home, ignore_errors=True)
-            results.append("~/.affine removed")
-        except Exception:
-            pass
-
-    # Clean up cargo cache for AFFiNE
-    cargo_cache = os.path.expanduser("~/.cache/affine-cargo-target")
-    if os.path.isdir(cargo_cache):
-        try:
-            shutil.rmtree(cargo_cache, ignore_errors=True)
-            results.append("cargo cache removed")
-        except Exception:
-            pass
-
-    return ", ".join(results) if results else None
-
-
 def remove_service(name: str) -> str:
-    """Remove a ghostprovider service: stop, disable, delete unit file, clean up all artifacts."""
-    import shutil
+    """Remove a demo_ghostprovider service: stop, disable, delete unit file, clean up all artifacts."""
     from demo_ghostprovider.state import unregister as _unregister_state, get_clone_path
 
     cleanup_log: list[str] = []
@@ -385,7 +348,7 @@ def remove_service(name: str) -> str:
         pass
 
     # 4. Read unit file BEFORE deleting (need WorkingDirectory and ExecStart)
-    # Check user systemd dir first (ghostprovider always uses user services)
+    # Check user systemd dir first (demo_ghostprovider always uses user services)
     unit_file = os.path.expanduser(f"~/.config/systemd/user/{name}.service")
     if not os.path.isfile(unit_file):
         unit_file = f"/etc/systemd/system/{name}.service"
@@ -426,12 +389,6 @@ def remove_service(name: str) -> str:
             cleanup_log.append(f"directory removed: {clone_path}")
         except Exception:
             cleanup_log.append(f"failed to remove: {clone_path}")
-
-    # 6b. Clean up AFFiNE database if this is an AFFiNE service
-    if _is_affine_service(name, working_dir, exec_start):
-        db_result = _cleanup_affine_db()
-        if db_result:
-            cleanup_log.append(db_result)
 
     # 7. Unregister from state
     _unregister_state(name)
@@ -562,13 +519,4 @@ def get_service_unit_content(unit_name: str) -> str | None:
     return None
 
 
-def find_free_port(start: int = 0, max_tries: int = 50) -> int:
-    """Find the first available port."""
-    import random
-    if start == 0:
-        start = random.randint(8000, 30000)
-    for port in range(start, start + max_tries):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(("127.0.0.1", port)) != 0:
-                return port
-    raise RuntimeError(f"No free port found in range {start}-{start + max_tries}")
+
