@@ -1,5 +1,5 @@
 pkgname=demo-ghostprovider
-pkgver=1.2.0
+pkgver=1.3.0
 pkgrel=1
 pkgdesc="TUI for self-hosting & localhost management"
 arch=('any')
