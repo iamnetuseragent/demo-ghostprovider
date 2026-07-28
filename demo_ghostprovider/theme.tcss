@@ -352,19 +352,10 @@ Button.svc-rm-btn:hover {
 #github-container,
 #result-container,
 #hosting-container,
-#services-container,
-#update-container {
+#services-container {
     width: 100%;
     height: 100%;
     background: #000;
-}
-
-#update-container #matrix-rain {
-    height: 1fr;
-}
-
-#update-btn-container {
-    height: 3;
 }
 
 #services-list {
