@@ -1,1 +1,16 @@
+.venv/
 __pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+.DS_Store
+*.swp
+*.swo
+*~
+pkg/
+src/
+*.tar.zst
+*.save
+*.save.*
