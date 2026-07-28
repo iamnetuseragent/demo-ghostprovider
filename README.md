@@ -69,6 +69,7 @@ This is a restricted demo version of GhostProvider that only supports deploying 
 - **VERT** - https://github.com/VERT-sh/VERT
 - **SearXNG** - https://github.com/searxng/searxng
 - **Memos** - https://github.com/usememos/memos
+- **Open WebUI** - https://github.com/open-webui/open-webui
 
 ## Quick Start (Linux)
 
