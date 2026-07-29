@@ -6,6 +6,8 @@
 #   build = <build-command>  (optional)
 #   start = <start-command>  (optional)
 #   health = <health-url>    (optional)
+#   ref = <git-branch-or-tag>  (optional, pins repo to a specific ref)
+#   sha256 = <hash>  (optional, pins repo HEAD to a specific commit hash)
 #   env = <key=value>        (optional, repeatable)
 
 [VERT]

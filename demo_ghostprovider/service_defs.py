@@ -1,8 +1,13 @@
 """GhostProvider service definitions parser."""
 
+import hashlib
+import logging
 import os
+import subprocess
 from pathlib import Path
 from dataclasses import dataclass, field
+
+logger = logging.getLogger("demo_ghostprovider.service_defs")
 
 
 @dataclass
@@ -15,6 +20,8 @@ class ServiceDef:
     build: str = ""
     start: str = ""
     health: str = "/"
+    sha256: str = ""
+    ref: str = ""
     env: dict[str, str] = field(default_factory=dict)
 
 
@@ -77,6 +84,10 @@ def parse_ghostproviderfile(path: Path | None = None) -> list[ServiceDef]:
                         current.start = value
                     elif key == "health":
                         current.health = value
+                    elif key == "sha256":
+                        current.sha256 = value.lower()
+                    elif key == "ref":
+                        current.ref = value
                     elif key == "env" and "=" in value:
                         env_key, _, env_val = value.partition("=")
                         current.env[env_key.strip()] = env_val.strip()
@@ -95,3 +106,55 @@ def get_service_def(repo_url: str) -> ServiceDef | None:
         if svc.repo == repo_url:
             return svc
     return None
+
+
+def verify_repo_integrity(clone_path: str, svc_def: ServiceDef) -> list[str]:
+    """Verify a cloned repository matches the expected integrity constraints.
+
+    Supports:
+    - ``sha256``: expected SHA256 of ``git rev-parse HEAD`` (commit pinning)
+    - ``ref``: expected git ref (tag or branch name)
+
+    Returns a list of error messages (empty means integrity is verified).
+    """
+    errors: list[str] = []
+
+    if svc_def.ref:
+        try:
+            r = subprocess.run(
+                ["git", "rev-parse", "--verify", f"refs/heads/{svc_def.ref}"],
+                capture_output=True, text=True, timeout=10,
+                cwd=clone_path,
+            )
+            if r.returncode != 0:
+                r = subprocess.run(
+                    ["git", "rev-parse", "--verify", f"refs/tags/{svc_def.ref}"],
+                    capture_output=True, text=True, timeout=10,
+                    cwd=clone_path,
+                )
+            if r.returncode != 0:
+                errors.append(f"Required ref '{svc_def.ref}' not found in repository")
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            errors.append(f"Cannot verify ref '{svc_def.ref}': {e}")
+
+    if svc_def.sha256:
+        try:
+            r = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=10,
+                cwd=clone_path,
+            )
+            if r.returncode == 0:
+                head_sha = r.stdout.strip()
+                computed = hashlib.sha256(head_sha.encode()).hexdigest()
+                if computed != svc_def.sha256:
+                    errors.append(
+                        f"SHA256 mismatch: expected {svc_def.sha256}, "
+                        f"got {computed} (HEAD is {head_sha[:12]})"
+                    )
+            else:
+                errors.append("Cannot get HEAD commit hash from repository")
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            errors.append(f"Cannot verify SHA256: {e}")
+
+    return errors

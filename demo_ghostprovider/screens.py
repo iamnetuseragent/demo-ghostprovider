@@ -405,6 +405,11 @@ class GithubScreen(Screen):
     def on_mount(self) -> None:
         self.query_one("#github-input", Input).focus()
 
+    def on_show(self) -> None:
+        inp = self.query_one("#github-input", Input)
+        inp.value = ""
+        inp.focus()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         from demo_ghostprovider.service_defs import get_service_def
         url = event.value.strip()
