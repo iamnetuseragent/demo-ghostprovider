@@ -350,7 +350,10 @@ def host_project(analysis: RepoAnalysis, port: int = 0,
             if strategy_result.healthy or (strategy_result.urls and strategy_result.service_names):
                 _register_state(service_name, str(project_dir), repo_url)
                 if work_dir:
-                    _finalize_temp_dir(analysis, service_name, on_status=on_status)
+                    _finalize_temp_dir(analysis, service_name, permanent_base=os.path.abspath(os.path.expanduser(work_dir)), on_status=on_status)
+                else:
+                    managed_base = os.path.expanduser("~/.local/share/demo-ghostprovider/services")
+                    _finalize_temp_dir(analysis, service_name, permanent_base=managed_base, on_status=on_status)
                 return strategy_result
             should_cleanup = True
             msg = strategy_result.errors[0] if strategy_result.errors else "service started but health check failed"
@@ -377,8 +380,9 @@ def host_project(analysis: RepoAnalysis, port: int = 0,
 
 
 def _finalize_temp_dir(analysis: RepoAnalysis, service_name: str,
+                       permanent_base: str = "",
                        on_status: Callable[[str], None] | None = None) -> None:
-    """Move project from temp dir to ~/localhosts after successful deploy.
+    """Move project from temp dir to a permanent location after successful deploy.
 
     Updates the systemd unit file to reference the new paths, restarts
     the service, and removes the temp directory.
@@ -390,7 +394,8 @@ def _finalize_temp_dir(analysis: RepoAnalysis, service_name: str,
         if on_status:
             on_status(msg)
 
-    permanent_base = os.path.expanduser("~/localhosts")
+    if not permanent_base:
+        permanent_base = os.path.expanduser("~/localhosts")
     os.makedirs(permanent_base, exist_ok=True)
     safe_name = _sanitize_dirname(analysis.name)
     final_dir = os.path.join(permanent_base, safe_name)
@@ -402,7 +407,7 @@ def _finalize_temp_dir(analysis: RepoAnalysis, service_name: str,
             shutil.rmtree(backup, ignore_errors=True)
         os.rename(final_dir, backup)
 
-    _emit("moving project to ~/localhosts...")
+    _emit(f"moving project to {permanent_base}...")
     try:
         os.rename(analysis.clone_path, final_dir)
     except OSError:
