@@ -351,6 +351,8 @@ def host_project(analysis: RepoAnalysis, port: int = 0,
                 _register_state(service_name, str(project_dir), repo_url)
                 if work_dir:
                     _finalize_temp_dir(analysis, service_name, permanent_base=os.path.abspath(os.path.expanduser(work_dir)), on_status=on_status)
+                elif name in ("Go", "Rust"):
+                    _relocate_compiled_binary(analysis, service_name, name, project_dir, on_status)
                 else:
                     managed_base = os.path.expanduser("~/.local/share/demo-ghostprovider/services")
                     _finalize_temp_dir(analysis, service_name, permanent_base=managed_base, on_status=on_status)
@@ -377,6 +379,99 @@ def host_project(analysis: RepoAnalysis, port: int = 0,
         analysis._temp_base = None
 
     raise RuntimeError("All strategies failed:\n" + "\n".join(errors))
+
+
+def _relocate_compiled_binary(analysis: RepoAnalysis, service_name: str,
+                               strategy: str, project_dir: Path,
+                               on_status: Callable[[str], None] | None = None) -> None:
+    """Copy the compiled binary to a managed bin dir and remove source files."""
+    def _emit(msg: str) -> None:
+        if on_status:
+            on_status(msg)
+
+    bin_dir = os.path.expanduser("~/.local/share/demo-ghostprovider/bin")
+    service_bin_dir = os.path.join(bin_dir, service_name)
+    os.makedirs(service_bin_dir, exist_ok=True)
+
+    binary_path = None
+    if strategy == "Go":
+        candidates = [
+            project_dir / "ghost-server",
+            project_dir / "server",
+            project_dir / "app",
+        ]
+        for c in candidates:
+            if c.is_file() and os.access(c, os.X_OK):
+                binary_path = c
+                break
+        if not binary_path:
+            from demo_ghostprovider.hoster.strategies.go import _find_existing_go_binary
+            found = _find_existing_go_binary(project_dir)
+            if found:
+                binary_path = Path(found)
+    elif strategy == "Rust":
+        release_dir = project_dir / "target" / "release"
+        if release_dir.is_dir():
+            for f in release_dir.iterdir():
+                if f.is_file() and not f.name.endswith(".d"):
+                    try:
+                        content = f.read_bytes()
+                        if b"ELF" in content[:20]:
+                            binary_path = f
+                            break
+                    except OSError:
+                        continue
+
+    if not binary_path:
+        _emit("compiled binary not found, keeping full project directory")
+        managed_base = os.path.expanduser("~/.local/share/demo-ghostprovider/services")
+        _finalize_temp_dir(analysis, service_name, permanent_base=managed_base, on_status=on_status)
+        return
+
+    _emit(f"installing binary to {service_bin_dir}...")
+    dest = os.path.join(service_bin_dir, binary_path.name)
+    try:
+        shutil.copy2(str(binary_path), dest)
+        os.chmod(dest, 0o755)
+    except OSError as e:
+        _emit(f"binary copy failed: {e}, keeping full project")
+        managed_base = os.path.expanduser("~/.local/share/demo-ghostprovider/services")
+        _finalize_temp_dir(analysis, service_name, permanent_base=managed_base, on_status=on_status)
+        return
+
+    # Update systemd unit to point to managed binary
+    unit_file = os.path.expanduser(f"~/.config/systemd/user/{service_name}.service")
+    if os.path.isfile(unit_file):
+        try:
+            content = Path(unit_file).read_text()
+            old_bin = str(binary_path)
+            new_bin = dest
+            content = content.replace(old_bin, new_bin)
+            content = content.replace(str(project_dir), service_bin_dir)
+            Path(unit_file).write_text(content)
+            subprocess.run(
+                ["systemctl", "--user", "daemon-reload"],
+                capture_output=True, text=True, timeout=10,
+            )
+            subprocess.run(
+                ["systemctl", "--user", "restart", service_name],
+                capture_output=True, text=True, timeout=30,
+            )
+        except OSError:
+            pass
+
+    # Update state
+    from demo_ghostprovider.state import register as _register_state
+    _register_state(service_name, dest, analysis.url)
+
+    # Clean up source files
+    _emit("removing source files...")
+    if analysis.clone_path and os.path.isdir(analysis.clone_path):
+        shutil.rmtree(analysis.clone_path, ignore_errors=True)
+    if analysis._temp_base and os.path.isdir(analysis._temp_base):
+        shutil.rmtree(analysis._temp_base, ignore_errors=True)
+        analysis._temp_base = None
+    analysis.clone_path = dest
 
 
 def _finalize_temp_dir(analysis: RepoAnalysis, service_name: str,
