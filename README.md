@@ -1,4 +1,4 @@
-# **Automated self-hosting platform.**
+<h1 align="center">Automated self-hosting platform</h1>
 
 > <p align="center">GhostProvider is an open-source platform that simplifies self-hosting by automating deployment, service management, discovery, and clean removal.</p>
 
