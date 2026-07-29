@@ -18,6 +18,9 @@ def _escape_unit_value(value: str) -> str:
     value = value.replace("\\", "\\\\")
     value = value.replace("\n", "\\n")
     value = value.replace('"', '\\"')
+    # systemd expands ${VARIABLE} and % specifiers — escape them
+    value = value.replace("$", "$$")
+    value = value.replace("%", "%%")
     return value
 
 

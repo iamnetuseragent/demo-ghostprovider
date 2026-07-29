@@ -2,6 +2,7 @@
 
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -25,7 +26,7 @@ def _setup_git_auth(env: dict[str, str]) -> str | None:
     fd, askpass_path = tempfile.mkstemp(suffix=".sh", prefix="gp-askpass-")
     with os.fdopen(fd, "w") as f:
         f.write("#!/bin/sh\n")
-        f.write(f'echo "{token}"\n')
+        f.write(f"echo {shlex.quote(token)}\n")
     os.chmod(askpass_path, 0o600)
 
     env["GIT_ASKPASS"] = askpass_path

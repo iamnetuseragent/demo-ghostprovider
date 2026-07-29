@@ -13,6 +13,11 @@ from demo_ghostprovider.hoster.analysis import (
     _detect_language,
 )
 from demo_ghostprovider.hoster.git import _git_clone
+
+
+def _sanitize_dirname(name: str) -> str:
+    """Sanitize a repo name for safe use as a directory name."""
+    return re.sub(r'[^a-zA-Z0-9_-]', '_', name)
 from demo_ghostprovider.hoster.systemd import _cleanup_strategy
 from demo_ghostprovider.hoster.verify import verify_deployment
 from demo_ghostprovider.hoster.strategies import _strategy_priority
@@ -109,7 +114,7 @@ def analyze_repo(url: str, work_dir: str | None = None) -> RepoAnalysis:
         result._temp_base = base
     os.makedirs(base, exist_ok=True)
     # Sanitize repo name to prevent path traversal
-    safe_name = re.sub(r'[^a-zA-Z0-9_\-.]', '_', result.name)
+    safe_name = _sanitize_dirname(result.name)
     clone_dir = os.path.join(base, safe_name)
     if os.path.isdir(os.path.join(clone_dir, ".git")):
         already_cloned = True
@@ -182,7 +187,7 @@ def ensure_cloned(analysis: RepoAnalysis, work_dir: str | None = None) -> None:
         base = os.path.expanduser("~/localhosts")
     os.makedirs(base, exist_ok=True)
     # Sanitize repo name to prevent path traversal
-    safe_name = re.sub(r'[^a-zA-Z0-9_\-.]', '-', analysis.name)
+    safe_name = _sanitize_dirname(analysis.name)
     clone_dir = os.path.join(base, safe_name)
     if os.path.isdir(os.path.join(clone_dir, ".git")):
         analysis.clone_path = clone_dir
@@ -386,7 +391,7 @@ def _finalize_temp_dir(analysis: RepoAnalysis, service_name: str,
 
     permanent_base = os.path.expanduser("~/localhosts")
     os.makedirs(permanent_base, exist_ok=True)
-    safe_name = re.sub(r'[^a-zA-Z0-9_\-.]', '-', analysis.name)
+    safe_name = _sanitize_dirname(analysis.name)
     final_dir = os.path.join(permanent_base, safe_name)
 
     # If permanent dir already exists with a different clone, back it up
