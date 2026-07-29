@@ -1,7 +1,8 @@
 ![GHOST PROVIDER Panel](GHOSTPROVIDER%20PANEL.JPEG)
 
-> TUI for self-hosting & localhost management.
-> Your data stays yours — local, private, under your control.
+Automated self-hosting platform.
+
+> <p align="center">GhostProvider is an open-source platform that simplifies self-hosting by automating deployment, service management, discovery, and clean removal.</p>
 
 ## One-Click Deploy
 
