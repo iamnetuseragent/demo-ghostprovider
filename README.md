@@ -1,8 +1,8 @@
-![GHOST PROVIDER Panel](GHOSTPROVIDER%20PANEL.JPEG)
-
-Automated self-hosting platform.
+# **Automated self-hosting platform.**
 
 > <p align="center">GhostProvider is an open-source platform that simplifies self-hosting by automating deployment, service management, discovery, and clean removal.</p>
+
+![GHOST PROVIDER Panel](GHOSTPROVIDER%20PANEL.JPEG)
 
 ## One-Click Deploy
 
