@@ -349,7 +349,8 @@ def host_project(analysis: RepoAnalysis, port: int = 0,
                 strategy_result = verify_deployment(strategy_result)
             if strategy_result.healthy or (strategy_result.urls and strategy_result.service_names):
                 _register_state(service_name, str(project_dir), repo_url)
-                _finalize_temp_dir(analysis, service_name, on_status=on_status)
+                if work_dir:
+                    _finalize_temp_dir(analysis, service_name, on_status=on_status)
                 return strategy_result
             should_cleanup = True
             msg = strategy_result.errors[0] if strategy_result.errors else "service started but health check failed"
