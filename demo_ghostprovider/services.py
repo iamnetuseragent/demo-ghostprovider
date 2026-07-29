@@ -318,7 +318,11 @@ def _extract_working_dir(unit_file: str) -> str | None:
 
 def remove_service(name: str) -> str:
     """Remove a demo_ghostprovider service: stop, disable, delete unit file, clean up all artifacts."""
+    from demo_ghostprovider.hoster.systemd import _validate_unit_name
     from demo_ghostprovider.state import unregister as _unregister_state, get_clone_path
+
+    if not _validate_unit_name(name):
+        return "remove failed: invalid service name"
 
     cleanup_log: list[str] = []
 

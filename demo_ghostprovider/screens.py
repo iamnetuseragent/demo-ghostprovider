@@ -12,6 +12,7 @@ from rich.style import Style
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, Center
+from rich.text import Text
 from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import (
@@ -913,7 +914,7 @@ class HostingScreen(Screen):
             def _on_status(line: str) -> None:
                 if line.strip():
                     self.app.call_from_thread(
-                        lambda: log.write(f"  [dim]{line[:120]}[/dim]")
+                        lambda: log.write(Text(f"  {line[:120]}", style="dim"))
                     )
 
             host_result = await loop.run_in_executor(
