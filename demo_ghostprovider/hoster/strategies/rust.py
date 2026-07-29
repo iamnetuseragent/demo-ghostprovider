@@ -1,6 +1,5 @@
 """Rust hosting strategy."""
 
-import os
 import re
 import subprocess
 import uuid

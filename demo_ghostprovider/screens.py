@@ -2,12 +2,10 @@
 
 import asyncio
 import logging
-import os
 import random
 import re
 import shutil
 import subprocess
-import sys
 import time
 
 from rich.style import Style
@@ -513,16 +511,6 @@ class WorkDirPromptScreen(Screen):
     def on_key(self, event) -> None:
         if event.key in ("escape", "left"):
             self.app.pop_screen()
-
-    def _on_paste(self, event) -> None:
-        try:
-            input_widget = self.query_one("#wd-input", Input)
-            text = event.text.splitlines()[0] if event.text else ""
-            if text:
-                input_widget.insert_text_at_cursor(text)
-        except Exception:
-            pass
-        event.stop()
 # ── Result Screen ───────────────────────────────────────────────────
 
 class RepoResultScreen(Screen):
@@ -547,26 +535,6 @@ class RepoResultScreen(Screen):
     def on_mount(self) -> None:
         rain = self.query_one(MatrixRain)
         _safe_task(self._animate_result(rain))
-
-    def _ask_confirm(self, msg: str) -> asyncio.Future:
-        """Push a ConfirmModal and return a Future that resolves to bool."""
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
-
-        def _cb(confirmed: bool) -> None:
-            fut.set_result(confirmed)
-
-        self.app.push_screen(ConfirmModal(msg), _cb)
-        return fut
-
-    def _ask_sudo(self) -> asyncio.Future:
-        """Push a SudoPrompt and return a Future that resolves to str | None."""
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
-
-        def _cb(password: str | None) -> None:
-            fut.set_result(password)
-
-        self.app.push_screen(SudoPrompt(), _cb)
-        return fut
 
     async def _animate_result(self, rain: MatrixRain) -> None:
         await rain.typewrite_status("initializing target acquisition...", speed=0.04)
@@ -1023,26 +991,6 @@ class HostingScreen(Screen):
         await self._typewrite(log, "  [dim yellow]Enter to return[/dim yellow]")
         self._done = True
 
-    def _ask_confirm(self, msg: str) -> asyncio.Future:
-        """Push a ConfirmModal and return a Future that resolves to bool."""
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
-
-        def _cb(confirmed: bool) -> None:
-            fut.set_result(confirmed)
-
-        self.app.push_screen(ConfirmModal(msg), _cb)
-        return fut
-
-    def _ask_sudo(self) -> asyncio.Future:
-        """Push a SudoPrompt and return a Future that resolves to str | None."""
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
-
-        def _cb(password: str | None) -> None:
-            fut.set_result(password)
-
-        self.app.push_screen(SudoPrompt(), _cb)
-        return fut
-
     def on_key(self, event) -> None:
         if event.key == "enter" and getattr(self, "_done", False):
             while not isinstance(self.app.screen, MainScreen):
@@ -1051,49 +999,6 @@ class HostingScreen(Screen):
 
 
 # ── Modals ──────────────────────────────────────────────────────────
-
-class SudoPrompt(Screen):
-    """Modal that asks for the sudo password."""
-
-    def __init__(self, custom_message: str | None = None):
-        self._custom_message = custom_message
-        super().__init__()
-
-    def compose(self) -> ComposeResult:
-        desc = self._custom_message or (
-            "[yellow]Ghostprovider needs sudo privileges\n"
-            "to install missing dependencies.[/yellow]"
-        )
-        yield Center(
-            Vertical(
-                Static("[bold red]╔══ SUDO AUTHENTICATION ══╗[/bold red]"),
-                Static(desc, id="sudo-desc"),
-                Input(
-                    placeholder="sudo password",
-                    password=True,
-                    id="sudo-password",
-                ),
-                Center(
-                    Static(
-                        "[dim red]Enter[/dim red] [dim]confirm  |  [/dim]"
-                        "[dim red]Esc[/dim red] [dim]cancel[/dim]",
-                        id="sudo-hint",
-                    ),
-                ),
-                id="sudo-container",
-            ),
-        )
-
-    def on_mount(self) -> None:
-        self.query_one("#sudo-password", Input).focus()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.dismiss(event.value.strip())
-
-    def on_key(self, event) -> None:
-        if event.key in ("escape", "left"):
-            self.dismiss(None)
-
 
 class ConfirmModal(Screen):
     def __init__(self, message: str, yes_action: str = ""):
@@ -1449,33 +1354,4 @@ class ServiceListScreen(Screen):
         except Exception as e:
             if hasattr(self, "app") and self.app:
                 self.app.notify(f"Remove error: {e}", severity="error", timeout=5)
-        await self._refresh()
-
-    async def _exec_reinstall(self, name: str, repo_url: str) -> None:
-        if hasattr(self, "app") and self.app:
-            self.app.notify(f"Reinstalling {name} from {repo_url}...", timeout=5)
-        loop = asyncio.get_running_loop()
-        try:
-            await loop.run_in_executor(None, remove_service, name)
-        except Exception:
-            pass
-        try:
-            from demo_ghostprovider.hoster import analyze_repo, host_project
-            result = await loop.run_in_executor(None, analyze_repo, repo_url)
-            if not result.can_host:
-                if hasattr(self, "app") and self.app:
-                    self.app.notify(f"Cannot reinstall: {result.reason}", severity="error", timeout=5)
-                return
-            host = await loop.run_in_executor(None, host_project, result, 0)
-            if host.healthy:
-                for url in host.urls:
-                    if hasattr(self, "app") and self.app:
-                        self.app.notify(f"Reinstalled at {url}", timeout=5)
-            else:
-                if hasattr(self, "app") and self.app:
-                    self.app.notify("Reinstall failed, check services", severity="error", timeout=5)
-            self._removed_urls.pop(name, None)
-        except Exception as e:
-            if hasattr(self, "app") and self.app:
-                self.app.notify(f"Reinstall error: {e}", severity="error", timeout=5)
         await self._refresh()

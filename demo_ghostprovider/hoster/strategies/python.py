@@ -3,6 +3,7 @@
 import os
 import re
 import secrets
+import shlex
 import shutil
 import subprocess
 import uuid
@@ -141,23 +142,24 @@ def _host_python_systemd(project_dir: Path, port: int, repo_url: str = "",
                     except OSError:
                         pass
 
+        sq = shlex.quote
         if has_manage and wsgi_module:
             if is_asgi:
-                cmd = f"{python_bin} -m uvicorn --host 127.0.0.1 --port {port} {wsgi_module}"
+                cmd = f"{python_bin} -m uvicorn --host 127.0.0.1 --port {port} {sq(wsgi_module)}"
             else:
                 cmd = (
-                    f"/bin/sh -c '{python_bin} -m gunicorn --bind 127.0.0.1:{port} {wsgi_module} "
-                    f"|| {python_bin} -m uvicorn --host 127.0.0.1 --port {port} {wsgi_module}'"
+                    f"/bin/sh -c '{python_bin} -m gunicorn --bind 127.0.0.1:{port} {sq(wsgi_module)} "
+                    f"|| {python_bin} -m uvicorn --host 127.0.0.1 --port {port} {sq(wsgi_module)}'"
                 )
         elif has_manage:
             cmd = f"{python_bin} manage.py runserver 127.0.0.1:{port}"
         elif wsgi_module:
             if is_asgi:
-                cmd = f"{python_bin} -m uvicorn --host 127.0.0.1 --port {port} {wsgi_module}"
+                cmd = f"{python_bin} -m uvicorn --host 127.0.0.1 --port {port} {sq(wsgi_module)}"
             else:
                 cmd = (
-                    f"/bin/sh -c '{python_bin} -m gunicorn --bind 127.0.0.1:{port} {wsgi_module} "
-                    f"|| {python_bin} -m uvicorn --host 127.0.0.1 --port {port} {wsgi_module}'"
+                    f"/bin/sh -c '{python_bin} -m gunicorn --bind 127.0.0.1:{port} {sq(wsgi_module)} "
+                    f"|| {python_bin} -m uvicorn --host 127.0.0.1 --port {port} {sq(wsgi_module)}'"
                 )
         elif py_entry:
             if "." in py_entry:

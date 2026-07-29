@@ -1,7 +1,6 @@
 """Node.js hosting strategy."""
 
 import glob
-import os
 import re
 import shutil
 import subprocess
