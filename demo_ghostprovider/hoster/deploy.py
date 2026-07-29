@@ -23,7 +23,7 @@ from demo_ghostprovider.hoster.strategies.go import _host_go_systemd
 from demo_ghostprovider.hoster.strategies.rust import _host_rust_systemd
 from demo_ghostprovider.hoster.strategies.static import _host_static_systemd
 from demo_ghostprovider.hoster._helpers import find_free_port
-from demo_ghostprovider.service_defs import get_service_def
+from demo_ghostprovider.service_defs import get_service_def, verify_repo_integrity
 from demo_ghostprovider.state import register as _register_state
 
 
@@ -38,12 +38,20 @@ def _detect_project_files(analysis: "RepoAnalysis", items: list[str]) -> None:
 
 
 def _build_git_url(owner: str, name: str) -> str:
-    """Build a git clone URL, injecting GitHub token if available."""
-    url = f"https://github.com/{owner}/{name}.git"
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
-    if token:
-        url = url.replace("https://", f"https://x-access-token:{token}@")
-    return url
+    """Build a git clone URL without embedding credentials.
+
+    Credentials are passed via GIT_ASKPASS in ``_git_clone()`` to avoid
+    leaking the token through ``/proc/PID/cmdline``.
+    """
+    return f"https://github.com/{owner}/{name}.git"
+
+
+_ALLOWED_REPOS: frozenset[str] = frozenset({
+    "https://github.com/VERT-sh/VERT",
+    "https://github.com/searxng/searxng",
+    "https://github.com/usememos/memos",
+    "https://github.com/open-webui/open-webui",
+})
 
 
 def analyze_repo(url: str, work_dir: str | None = None) -> RepoAnalysis:
@@ -54,6 +62,18 @@ def analyze_repo(url: str, work_dir: str | None = None) -> RepoAnalysis:
     )
 
     result = RepoAnalysis(url=url)
+
+    # Whitelist enforcement — only pre-approved repos can be deployed
+    norm_url = url.rstrip("/")
+    if norm_url.endswith(".git"):
+        norm_url = norm_url[:-4]
+    if norm_url not in _ALLOWED_REPOS:
+        result.errors.append(
+            "This demo version only supports the following repositories:\n"
+            + "\n".join(f"  • {r}" for r in sorted(_ALLOWED_REPOS))
+        )
+        result.reason = "Repository not in demo whitelist"
+        return result
 
     parsed = parse_github_url(url)
     if not parsed:
@@ -244,6 +264,15 @@ def host_project(analysis: RepoAnalysis, port: int = 0,
         result = HostResult()
         result.errors.append("Cannot clone repository (check network connection)")
         return result
+
+    # Verify repo integrity if a service definition with sha256/ref exists
+    svc_def = get_service_def(analysis.url)
+    if svc_def:
+        integrity_errors = verify_repo_integrity(analysis.clone_path, svc_def)
+        if integrity_errors:
+            result = HostResult()
+            result.errors.extend(integrity_errors)
+            return result
 
     if not analysis.deep_analysis:
         _deep_analyze_project(analysis)

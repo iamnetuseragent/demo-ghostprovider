@@ -13,7 +13,7 @@ from demo_ghostprovider.hoster.systemd import (
     _check_service_started,
     _get_service_logs,
 )
-from demo_ghostprovider.hoster._helpers import _resolve_start_cmd
+from demo_ghostprovider.hoster._helpers import _resolve_start_cmd, _run_build_cmd
 
 # Well-known library directories to skip when searching for user apps
 LIBRARY_DIRS = frozenset({
@@ -86,10 +86,7 @@ def _host_python_systemd(project_dir: Path, port: int, repo_url: str = "",
     # ── 3. Run optional build command from ghostproviderfile ──
     if build_cmd:
         try:
-            subprocess.run(
-                build_cmd, shell=True, capture_output=True, text=True,
-                timeout=900, cwd=str(project_dir),
-            )
+            _run_build_cmd(build_cmd, project_dir, timeout=900)
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
 

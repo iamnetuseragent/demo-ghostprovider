@@ -128,10 +128,10 @@ def _check_service_started(service_name: str, delay: float = 5.0) -> bool:
 
 
 def _get_service_logs(service_name: str, lines: int = 50) -> str:
-    """Get recent logs from a systemd service."""
+    """Get recent logs from a systemd user service."""
     try:
         r = subprocess.run(
-            ["journalctl", "-u", service_name, "-n", str(lines), "--no-pager"],
+            ["journalctl", "--user", "-u", service_name, "-n", str(lines), "--no-pager"],
             capture_output=True, text=True, timeout=10,
         )
         if r.returncode == 0:

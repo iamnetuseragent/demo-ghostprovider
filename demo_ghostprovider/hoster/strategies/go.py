@@ -12,7 +12,7 @@ from demo_ghostprovider.hoster.systemd import (
     _check_service_started,
     _get_service_logs,
 )
-from demo_ghostprovider.hoster._helpers import _resolve_start_cmd
+from demo_ghostprovider.hoster._helpers import _resolve_start_cmd, _run_build_cmd
 
 
 def _host_go_systemd(project_dir: Path, port: int, repo_url: str = "",
@@ -33,7 +33,7 @@ def _host_go_systemd(project_dir: Path, port: int, repo_url: str = "",
 
     # ── 1. Run optional build command from ghostproviderfile ──
     if build_cmd:
-        _run_build_cmd(build_cmd, project_dir, output_bin)
+        _run_build_cmd_go(build_cmd, project_dir, output_bin)
 
     # ── 2. Check for existing compiled binary ──
     # When build_cmd is provided, always prefer the fresh ghost-server binary
@@ -139,8 +139,8 @@ def _host_go_systemd(project_dir: Path, port: int, repo_url: str = "",
 # ── Build helpers ──────────────────────────────────────────────────────
 
 
-def _run_build_cmd(build_cmd: str, project_dir: Path, output_bin: str) -> None:
-    """Execute a build command from ghostproviderfile."""
+def _run_build_cmd_go(build_cmd: str, project_dir: Path, output_bin: str) -> None:
+    """Execute a Go build command from ghostproviderfile."""
     for tool in ("pnpm", "npm", "yarn", "bun"):
         if tool in build_cmd and not shutil.which(tool):
             raise RuntimeError(
@@ -154,10 +154,7 @@ def _run_build_cmd(build_cmd: str, project_dir: Path, output_bin: str) -> None:
     build_env["GOCACHE"] = os.path.join(tmp_base, "gocache")
     build_env["GOMODCACHE"] = os.path.join(tmp_base, "gomodcache")
     try:
-        r = subprocess.run(
-            build_cmd, shell=True, capture_output=True, text=True,
-            timeout=900, cwd=str(project_dir), env=build_env,
-        )
+        r = _run_build_cmd(build_cmd, project_dir, timeout=900, env=build_env)
         if r.returncode != 0:
             if os.path.isfile(output_bin):
                 os.remove(output_bin)
