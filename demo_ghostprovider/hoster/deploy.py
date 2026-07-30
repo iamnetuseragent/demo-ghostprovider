@@ -51,11 +51,11 @@ def _build_git_url(owner: str, name: str) -> str:
     return f"https://github.com/{owner}/{name}.git"
 
 
-_ALLOWED_REPOS: frozenset[str] = frozenset({
-    "https://github.com/VERT-sh/VERT",
-    "https://github.com/searxng/searxng",
-    "https://github.com/usememos/memos",
-    "https://github.com/open-webui/open-webui",
+_ALLOWED_REPOS: frozenset[tuple[str, str]] = frozenset({
+    ("VERT-sh", "VERT"),
+    ("searxng", "searxng"),
+    ("usememos", "memos"),
+    ("open-webui", "open-webui"),
 })
 
 
@@ -68,19 +68,17 @@ def analyze_repo(url: str, work_dir: str | None = None) -> RepoAnalysis:
 
     result = RepoAnalysis(url=url)
 
-    # Whitelist enforcement — only pre-approved repos can be deployed
-    norm_url = url.rstrip("/")
-    if norm_url.endswith(".git"):
-        norm_url = norm_url[:-4]
-    if norm_url not in _ALLOWED_REPOS:
+    parsed = parse_github_url(url)
+    if parsed and (parsed[0], parsed[1]) not in _ALLOWED_REPOS:
         result.errors.append(
-            "This demo version only supports the following repositories:\n"
-            + "\n".join(f"  • {r}" for r in sorted(_ALLOWED_REPOS))
+            "This demo version only supports:\n"
+            "  • VERT (VERT-sh/VERT)\n"
+            "  • SearXNG (searxng/searxng)\n"
+            "  • Memos (usememos/memos)\n"
+            "  • Open WebUI (open-webui/open-webui)"
         )
         result.reason = "Repository not in demo whitelist"
         return result
-
-    parsed = parse_github_url(url)
     if not parsed:
         result.errors.append("Invalid GitHub URL format")
         result.reason = "Invalid GitHub URL"
@@ -237,8 +235,8 @@ def preflight_check() -> list[str]:
 
     try:
         r = subprocess.run(
-            ["ping", "-c", "1", "-W", "2", "8.8.8.8"],
-            capture_output=True, timeout=5,
+            ["python3", "-c", "import urllib.request; urllib.request.urlopen('https://pypi.org', timeout=5)"],
+            capture_output=True, timeout=10,
         )
         if r.returncode != 0:
             issues.append("No network connectivity")
