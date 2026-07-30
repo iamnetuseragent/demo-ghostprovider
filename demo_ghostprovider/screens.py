@@ -224,13 +224,7 @@ class MainScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Vertical(
             Static(
-                "[bold magenta]═══════════════════════════[/bold magenta]\n"
-                "[bold magenta]    DEMO PROJECT[/bold magenta]\n"
-                "[bold magenta]═══════════════════════════[/bold magenta]",
-                id="demo-banner",
-            ),
-            Static(
-                "[bold yellow]⎈ SYSTEM READY ⎈[/bold yellow]\n\n"
+                "[bold yellow]⎈ DEMO PROJECT ⎈[/bold yellow]\n\n"
                 "[red]Your data is your life.\n"
                 "Fail to protect it, and you fail to protect your future.\n"
                 "Only you decide what that future will be.[/red]",
@@ -370,7 +364,7 @@ class AnalysisScreen(Screen):
 
     def on_key(self, event) -> None:
         if event.key == "enter" and hasattr(self, "_result"):
-            self.app.push_screen("github")
+            self.app.push_screen(GithubScreen())
 
 
 # ── GitHub Input Screen ────────────────────────────────────────────
@@ -390,7 +384,6 @@ class GithubScreen(Screen):
                 placeholder="https://github.com/user/repository",
                 id="github-input",
             ),
-            Static("", id="github-status"),
             Center(
                 Static(
                     "[dim red]Enter[/dim red] [dim]analyse  |  [/dim]"
@@ -410,20 +403,9 @@ class GithubScreen(Screen):
         inp.focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        from demo_ghostprovider.service_defs import get_service_def
         url = event.value.strip()
-        if not url:
-            return
-        svc_def = get_service_def(url)
-        if svc_def is None:
-            status = self.query_one("#github-status", Static)
-            status.update(
-                "[bold red]REPO NOT SUPPORTED[/bold red]\n"
-                "[dim]Only VERT, SearXNG, Memos and Open WebUI are available in demo.[/dim]"
-            )
-            return
-        self.query_one("#github-status", Static).update("")
-        self.app.push_screen(WorkDirPromptScreen(url=url))
+        if url:
+            self.app.push_screen(WorkDirPromptScreen(url=url))
 
     def on_key(self, event) -> None:
         if event.key in ("escape", "left"):

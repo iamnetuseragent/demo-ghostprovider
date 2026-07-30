@@ -15,6 +15,14 @@ from demo_ghostprovider.hoster.systemd import (
 )
 
 
+def _resolve_serve_dir(project_dir: Path, candidates: list[str]) -> str | None:
+    """Find first candidate dir under project_dir that contains index.html."""
+    for d in candidates:
+        if (project_dir / d / "index.html").exists():
+            return d
+    return None
+
+
 def _host_node_systemd(project_dir: Path, port: int, repo_url: str = "",
                        build_cmd: str = "", start_cmd: str = "") -> str:
     """Host a Node.js project using systemd.
@@ -91,41 +99,40 @@ def _host_node_systemd(project_dir: Path, port: int, repo_url: str = "",
     else:
         serve_full = ""
 
-    if not build_layer and not serve_full:
+    # Auto-detect serve command when not provided but build is
+    static_serve = False
+    if build_layer and not serve_full:
+        if is_sveltekit:
+            serve_full = f"{serve_cmd} -s build -l {port}"
+            static_serve = True
+        elif has_start:
+            serve_full = f"{run_cmd} run start"
+        elif has_preview:
+            serve_full = f"{run_cmd} run preview --host 127.0.0.1 --port {port}"
+        elif has_dev:
+            serve_full = f"{run_cmd} run dev --host 127.0.0.1 --port {port}"
+        else:
+            serve_full = f"{serve_cmd} -s . -l {port}"
+            static_serve = True
+    elif not build_layer and not serve_full:
         if is_sveltekit:
             build_layer = f"{run_cmd} run build"
-            serve_full = (
-                f"/bin/sh -c '{serve_cmd} -s build -l {port} "
-                f"|| {serve_cmd} -s dist/renderer -l {port} "
-                f"|| {serve_cmd} -s dist -l {port} "
-                f"|| {serve_cmd} -s build/client -l {port} "
-                f"|| {serve_cmd} -s . -l {port}'"
-            )
+            serve_full = f"{serve_cmd} -s build -l {port}"
+            static_serve = True
         elif has_build and has_start:
             build_layer = f"{run_cmd} run build"
             serve_full = f"{run_cmd} run start"
         elif has_build:
             build_layer = f"{run_cmd} run build"
-            # After build, check common output dirs
-            serve_full = (
-                f"/bin/sh -c '{serve_cmd} -s build -l {port} "
-                f"|| {serve_cmd} -s dist -l {port} "
-                f"|| {serve_cmd} -s public -l {port} "
-                f"|| python3 -m http.server {port} --directory build "
-                f"|| python3 -m http.server {port} --directory dist "
-                f"|| python3 -m http.server {port} --directory public'"
-            )
+            serve_full = f"{serve_cmd} -s build -l {port}"
+            static_serve = True
         elif has_preview:
-            build_layer = ""
             serve_full = f"{run_cmd} run preview --host 127.0.0.1 --port {port}"
         elif has_dev:
-            build_layer = ""
             serve_full = f"{run_cmd} run dev --host 127.0.0.1 --port {port}"
         elif has_start:
-            build_layer = ""
             serve_full = f"{run_cmd} run start"
         else:
-            build_layer = ""
             serve_full = f"{serve_cmd} -s . -l {port}"
 
     # ── Install deps ──
@@ -149,6 +156,14 @@ def _host_node_systemd(project_dir: Path, port: int, repo_url: str = "",
                 )
         if r.returncode != 0:
             raise RuntimeError(f"Build failed: {r.stderr[:300]}")
+
+        # After build, find actual output dir for static-serve cases
+        if static_serve:
+            build_dir = _resolve_serve_dir(project_dir, ["build", "dist", "public", "dist/renderer", "build/client"])
+            if build_dir:
+                serve_full = f"{serve_cmd} -s {build_dir} -l {port}"
+            else:
+                serve_full = f"{serve_cmd} -s . -l {port}"
 
     # ── Create systemd service ──
     # Set BUN_TMPDIR for Bun projects (needed with PrivateTmp=yes)

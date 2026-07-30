@@ -52,7 +52,7 @@ def _host_openwebui_systemd(project_dir: Path, port: int, repo_url: str = "",
         try:
             r = subprocess.run(
                 [str(pip), "install", "--no-cache-dir", "open-webui"],
-                capture_output=True, text=True, timeout=600,
+                capture_output=True, text=True, timeout=1200,
                 env=env,
             )
             if r.returncode != 0:
@@ -62,7 +62,7 @@ def _host_openwebui_systemd(project_dir: Path, port: int, repo_url: str = "",
                 )
         except subprocess.TimeoutExpired:
             raise RuntimeError(
-                "pip install open-webui timed out after 600s.\n"
+                "pip install open-webui timed out after 1200s.\n"
                 "Check your internet connection and try again."
             )
         finally:
