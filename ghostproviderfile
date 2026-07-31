@@ -1,7 +1,7 @@
 # GhostProvider Service Definitions
 # Format: [service-name]
 #   repo = <github-url>
-#   strategy = <python|node|go|rust|static|openwebui>
+#   strategy = <python|node|go|rust|static>
 #   port = <default-port>
 #   build = <build-command>  (optional)
 #   start = <start-command>  (optional)
@@ -31,9 +31,3 @@ port = 8300
 build = cd web && pnpm install --no-frozen-lockfile && pnpm run release && cd .. && go build -o ghost-server ./cmd/memos
 start = ./ghost-server --port 8300
 health = /api/v1/status
-
-[OpenWebUI]
-repo = https://github.com/open-webui/open-webui
-strategy = openwebui
-port = 8080
-health = /

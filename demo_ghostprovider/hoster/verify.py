@@ -8,7 +8,7 @@ from demo_ghostprovider.hoster.analysis import _http_get_with_curl_fallback
 from demo_ghostprovider.hoster.systemd import _get_service_logs, _discover_service_urls
 
 
-def verify_url(url: str, timeout: int = 15) -> tuple[bool, str]:
+def verify_url(url: str, timeout: int = 60) -> tuple[bool, str]:
     """Check if a URL responds with HTTP 200. Returns (ok, detail)."""
     try:
         r = _http_get_with_curl_fallback(url, timeout=timeout, headers={"User-Agent": "demo_ghostprovider/1.0"})
@@ -19,7 +19,7 @@ def verify_url(url: str, timeout: int = 15) -> tuple[bool, str]:
         return False, str(e)
 
 
-def verify_deployment(result, timeout: int = 300,
+def verify_deployment(result, timeout: int = 86400,
                       on_status: Callable[[str], None] | None = None) -> "HostResult":
     """Verify a deployment is healthy."""
     from demo_ghostprovider.hoster.analysis import HostResult
@@ -36,7 +36,7 @@ def verify_deployment(result, timeout: int = 300,
             try:
                 r = subprocess.run(
                     ["systemctl", "--user", "is-active", service_name],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True, text=True, timeout=30,
                 )
                 status = r.stdout.strip()
                 if status == "active":
@@ -69,9 +69,9 @@ def verify_deployment(result, timeout: int = 300,
         ok = False
         detail = ""
         retries = 0
-        while time.time() < deadline and retries < 30:
+        while time.time() < deadline and retries < 300:
             done_callback(f"checking {url} (attempt {retries + 1})...")
-            ok, detail = verify_url(url, timeout=10)
+            ok, detail = verify_url(url, timeout=60)
             if ok:
                 result.healthy = True
                 done_callback(f"{url} is responding")

@@ -32,7 +32,7 @@ def _host_static_systemd(project_dir: Path, port: int, repo_url: str = "") -> st
         try:
             r = subprocess.run(
                 ["systemctl", "--user", "start", service_name],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True,
             )
             if r.returncode != 0:
                 raise RuntimeError(f"Failed to start service: {r.stderr}")

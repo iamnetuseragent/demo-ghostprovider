@@ -78,7 +78,7 @@ def _host_go_systemd(project_dir: Path, port: int, repo_url: str = "",
                 cmd.append(target)
             try:
                 r = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=900,
+                    cmd, capture_output=True, text=True,
                     cwd=str(project_dir), env=env,
                 )
                 if r.returncode == 0 and os.path.isfile(output_bin):
@@ -117,7 +117,7 @@ def _host_go_systemd(project_dir: Path, port: int, repo_url: str = "",
         try:
             r = subprocess.run(
                 ["systemctl", "--user", "start", service_name],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True,
             )
             if r.returncode != 0:
                 raise RuntimeError(f"Failed to start service: {r.stderr}")
@@ -154,7 +154,7 @@ def _run_build_cmd_go(build_cmd: str, project_dir: Path, output_bin: str) -> Non
     build_env["GOCACHE"] = os.path.join(tmp_base, "gocache")
     build_env["GOMODCACHE"] = os.path.join(tmp_base, "gomodcache")
     try:
-        r = _run_build_cmd(build_cmd, project_dir, timeout=900, env=build_env)
+        r = _run_build_cmd(build_cmd, project_dir, env=build_env)
         if r.returncode != 0:
             if os.path.isfile(output_bin):
                 os.remove(output_bin)
@@ -286,12 +286,10 @@ def _auto_build_frontend(project_dir: Path) -> None:
 
     try:
         subprocess.run(
-            [pkg_manager, "install"], capture_output=True, text=True,
-            timeout=300, cwd=str(web_dir), env=build_env,
+            [pkg_manager, "install"], capture_output=True, text=True, cwd=str(web_dir), env=build_env,
         )
         subprocess.run(
-            [pkg_manager, "run", build_script], capture_output=True, text=True,
-            timeout=600, cwd=str(web_dir), env=build_env,
+            [pkg_manager, "run", build_script], capture_output=True, text=True, cwd=str(web_dir), env=build_env,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass

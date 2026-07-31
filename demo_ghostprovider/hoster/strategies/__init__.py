@@ -8,9 +8,6 @@ def _strategy_priority(analysis: RepoAnalysis) -> list[str]:
     da = analysis.deep_analysis or {}
     wf = da.get("web_framework", "")
 
-    if analysis.deep_analysis.get("is_openwebui"):
-        return ["OpenWebUI"]
-
     has_python = analysis.has_requirements or analysis.has_pyproject
 
     if has_python and wf:
