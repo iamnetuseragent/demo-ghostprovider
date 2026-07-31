@@ -12,8 +12,6 @@ from typing import Any
 
 import requests
 
-from demo_ghostprovider.hoster._helpers import _read_package_json
-
 
 @dataclass
 class HostResult:
@@ -665,9 +663,6 @@ def detect_app_category(
     # ── Phase 1: Deep analysis signals (most reliable) ──
     if analysis.deep_analysis:
         da = analysis.deep_analysis
-        # Known self-hosted services (highest priority)
-        if da.get("is_openwebui"):
-            return "web_app", "Deep analysis: Open WebUI AI interface", True
         # Web signals first (strongest indicators)
         if da.get("web_framework"):
             return "web_app", f"Deep analysis: {da['web_framework']}", True
@@ -820,22 +815,7 @@ def _deep_analyze_project(analysis: RepoAnalysis) -> RepoAnalysis:
     # ── 3. Library detection ──
     da["is_library"] = _is_library_project(project_dir, analysis)
 
-    # ── 4. Open WebUI detection (self-hosted AI interface) ──
-    da["is_openwebui"] = False
-    if analysis.name and analysis.name.lower() in ("open-webui", "openwebui"):
-        da["is_openwebui"] = True
-    elif analysis.owner and analysis.owner.lower() == "open-webui":
-        da["is_openwebui"] = True
-    # Check for Open WebUI project structure: backend/open_webui/main.py
-    if (project_dir / "backend" / "open_webui" / "main.py").exists():
-        da["is_openwebui"] = True
-    # Also check package.json name
-    if analysis.has_package_json:
-        pkg = _read_package_json(project_dir)
-        if pkg and pkg.get("name", "") == "open-webui":
-            da["is_openwebui"] = True
-
-    # ── 6. Store in analysis ──
+    # ── 4. Store in analysis ──
     analysis.deep_analysis = da
     analysis.web_framework = da.get("web_framework", "")
     analysis.has_http_server = da.get("has_http_server", False)
@@ -949,9 +929,6 @@ def _compute_host_score(analysis: RepoAnalysis) -> tuple[int, str]:
     if analysis.name and any(kw in analysis.name.lower() for kw in ("whoogle", "yacy", "librey")):
         score += 20
         reasons.append("search engine detected (+20)")
-    if da.get("is_openwebui"):
-        score += 50
-        reasons.append("Open WebUI self-hosted AI interface (+50)")
 
     # ── GitHub metadata ──
     if da.get("gh_description_web"):

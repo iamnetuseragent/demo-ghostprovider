@@ -142,8 +142,7 @@ def _host_node_systemd(project_dir: Path, port: int, repo_url: str = "",
     if build_layer:
         build_cmd = build_layer.split()
         r = subprocess.run(
-            build_cmd, capture_output=True, text=True,
-            timeout=1800, cwd=str(project_dir),
+            build_cmd, capture_output=True, text=True, cwd=str(project_dir),
         )
         # Retry without paraglide compile if it fails
         if r.returncode != 0 and "paraglide" in r.stderr.lower():
@@ -151,8 +150,7 @@ def _host_node_systemd(project_dir: Path, port: int, repo_url: str = "",
                 "paraglide-js compile &&", "")
             if vite_cmd_str != build_layer:
                 r = subprocess.run(
-                    vite_cmd_str.split(), capture_output=True, text=True,
-                    timeout=1800, cwd=str(project_dir),
+                    vite_cmd_str.split(), capture_output=True, text=True, cwd=str(project_dir),
                 )
         if r.returncode != 0:
             raise RuntimeError(f"Build failed: {r.stderr[:300]}")
@@ -188,7 +186,7 @@ def _host_node_systemd(project_dir: Path, port: int, repo_url: str = "",
         try:
             r = subprocess.run(
                 ["systemctl", "--user", "start", service_name],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True,
             )
             if r.returncode != 0:
                 raise RuntimeError(f"Failed to start service: {r.stderr}")

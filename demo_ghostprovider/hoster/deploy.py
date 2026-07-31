@@ -21,7 +21,6 @@ def _sanitize_dirname(name: str) -> str:
 from demo_ghostprovider.hoster.systemd import _cleanup_strategy
 from demo_ghostprovider.hoster.verify import verify_deployment
 from demo_ghostprovider.hoster.strategies import _strategy_priority
-from demo_ghostprovider.hoster.strategies.openwebui import _host_openwebui_systemd
 from demo_ghostprovider.hoster.strategies.python import _host_python_systemd
 from demo_ghostprovider.hoster.strategies.node import _host_node_systemd
 from demo_ghostprovider.hoster.strategies.go import _host_go_systemd
@@ -55,7 +54,6 @@ _ALLOWED_REPOS: frozenset[tuple[str, str]] = frozenset({
     ("VERT-sh", "VERT"),
     ("searxng", "searxng"),
     ("usememos", "memos"),
-    ("open-webui", "open-webui"),
 })
 
 
@@ -74,8 +72,7 @@ def analyze_repo(url: str, work_dir: str | None = None) -> RepoAnalysis:
             "This demo version only supports:\n"
             "  • VERT (VERT-sh/VERT)\n"
             "  • SearXNG (searxng/searxng)\n"
-            "  • Memos (usememos/memos)\n"
-            "  • Open WebUI (open-webui/open-webui)"
+            "  • Memos (usememos/memos)"
         )
         result.reason = "Repository not in demo whitelist"
         return result
@@ -248,8 +245,7 @@ def preflight_check() -> list[str]:
 
 def host_project(analysis: RepoAnalysis, port: int = 0,
                  verify: bool = True, work_dir: str | None = None,
-                 on_status: Callable[[str], None] | None = None,
-                 sudo_password: bytearray | None = None) -> HostResult:
+                 on_status: Callable[[str], None] | None = None) -> HostResult:
     """Run the project and return service names and URLs."""
     def _emit(msg: str) -> None:
         if on_status:
@@ -305,7 +301,6 @@ def host_project(analysis: RepoAnalysis, port: int = 0,
         "go": "Go",
         "rust": "Rust",
         "static": "Static",
-        "openwebui": "OpenWebUI",
     }
 
     # Determine build/start overrides from service definition
@@ -313,7 +308,6 @@ def host_project(analysis: RepoAnalysis, port: int = 0,
     start_cmd = svc_def.start if svc_def else ""
 
     fn_map = {
-        "OpenWebUI": lambda: _host_openwebui_systemd(project_dir, port, analysis.name, sudo_password=sudo_password),
         "Python": lambda: _host_python_systemd(project_dir, port, analysis.name, build_cmd=build_cmd, start_cmd=start_cmd),
         "Node.js": lambda: _host_node_systemd(project_dir, port, analysis.name, build_cmd=build_cmd, start_cmd=start_cmd),
         "Go": lambda: _host_go_systemd(project_dir, port, analysis.name, build_cmd=build_cmd, start_cmd=start_cmd),

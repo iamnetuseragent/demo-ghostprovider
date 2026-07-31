@@ -40,12 +40,12 @@ def _host_python_systemd(project_dir: Path, port: int, repo_url: str = "",
     precedence over auto-detected commands.
 
     If python_bin is provided (e.g. "/usr/bin/python3.11"), use it for venv
-    creation instead of auto-detecting. Used by specialized strategies like
-    Open WebUI that require a specific Python version.
+    creation instead of auto-detecting. Used by specialized strategies that
+    require a specific Python version.
 
     If skip_deps is True, skip pip install (deps already installed by caller).
 
-    If entry_point is provided (e.g. "open_webui.main:app"), use it as the
+    If entry_point is provided (e.g. "myapp.main:app"), use it as the
     ASGI/WSGI module instead of auto-detecting. When the module contains
     ":" it's treated as module:attr; uvicorn is used for ASGI apps.
 
@@ -74,7 +74,7 @@ def _host_python_systemd(project_dir: Path, port: int, repo_url: str = "",
             try:
                 r = subprocess.run(
                     [str(pip), "install", "-e", "."],
-                    capture_output=True, text=True, timeout=1200,
+                    capture_output=True, text=True,
                     cwd=str(project_dir),
                 )
                 package_installed = r.returncode == 0
@@ -87,13 +87,13 @@ def _host_python_systemd(project_dir: Path, port: int, repo_url: str = "",
     # ── 3. Run optional build command from ghostproviderfile ──
     if build_cmd:
         try:
-            _run_build_cmd(build_cmd, project_dir, timeout=900)
+            _run_build_cmd(build_cmd, project_dir)
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
 
     # ── 4. Detect entry point and build command ──
     if entry_point:
-        # Caller provided explicit entry point (e.g. "open_webui.main:app")
+        # Caller provided explicit entry point (e.g. "myapp.main:app")
         wsgi_module = entry_point
         is_asgi = True  # Assume ASGI when caller specifies module:attr
     else:
@@ -185,7 +185,7 @@ def _host_python_systemd(project_dir: Path, port: int, repo_url: str = "",
         try:
             r = subprocess.run(
                 ["systemctl", "--user", "start", service_name],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True,
             )
             if r.returncode != 0:
                 raise RuntimeError(f"Failed to start service: {r.stderr}")
@@ -223,7 +223,7 @@ def _ensure_venv(venv_dir: Path, project_dir: Path,
         try:
             r = subprocess.run(
                 [str(venv_python), "--version"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True,
             )
             # If venv exists and we're not forcing a specific Python, it's fine
             venv_ok = r.returncode == 0
@@ -235,7 +235,7 @@ def _ensure_venv(venv_dir: Path, project_dir: Path,
         try:
             subprocess.run(
                 [py_cmd, "-m", "venv", str(venv_dir)],
-                capture_output=True, timeout=60,
+                capture_output=True,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
@@ -246,7 +246,7 @@ def _ensure_venv(venv_dir: Path, project_dir: Path,
             try:
                 subprocess.run(
                     [py_cmd, "-m", "venv", "--system-site-packages", str(venv_dir)],
-                    capture_output=True, timeout=60,
+                    capture_output=True,
                 )
             except (subprocess.TimeoutExpired, FileNotFoundError):
                 pass
@@ -259,7 +259,7 @@ def _ensure_venv(venv_dir: Path, project_dir: Path,
         try:
             subprocess.run(
                 [str(pip), "install", "--upgrade", "pip"],
-                capture_output=True, timeout=120,
+                capture_output=True,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
@@ -270,7 +270,7 @@ def _ensure_venv(venv_dir: Path, project_dir: Path,
             try:
                 subprocess.run(
                     [str(pip), "install", "-r", str(req)],
-                    capture_output=True, text=True, timeout=1200,
+                    capture_output=True, text=True,
                 )
             except (subprocess.TimeoutExpired, FileNotFoundError):
                 pass
@@ -279,7 +279,7 @@ def _ensure_venv(venv_dir: Path, project_dir: Path,
         try:
             subprocess.run(
                 [str(pip), "install", "gunicorn", "uvicorn"],
-                capture_output=True, text=True, timeout=120,
+                capture_output=True, text=True,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass

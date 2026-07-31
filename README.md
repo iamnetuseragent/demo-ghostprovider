@@ -38,8 +38,7 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
 
 - **All data stays local** — no telemetry, no external requests beyond GitHub API
 - **No root required** — services run as systemd user-level units
-- **Sudo requested only for:** package installation (apt/pacman)
-- **Password handled securely** — verified locally via `sudo -S`, never stored on disk
+- **Explicit confirmation before deploy** — the software always asks YES/NO before hosting a service
 - **Service sandboxing:**
   - `NoNewPrivileges=yes` — prevents privilege escalation
   - `ProtectHome=read-only` — no write access to home directory
@@ -70,7 +69,6 @@ This is a restricted demo version of GhostProvider that only supports deploying 
 - **VERT** - https://github.com/VERT-sh/VERT
 - **SearXNG** - https://github.com/searxng/searxng
 - **Memos** - https://github.com/usememos/memos
-- **Open WebUI** - https://github.com/open-webui/open-webui
 
 ## Quick Start (Linux)
 

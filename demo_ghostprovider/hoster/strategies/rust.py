@@ -22,14 +22,14 @@ def _host_rust_systemd(project_dir: Path, port: int, repo_url: str = "") -> str:
     try:
         r = subprocess.run(
             ["cargo", "build", "--release", "--bin", bin_name],
-            capture_output=True, text=True, timeout=600,
+            capture_output=True, text=True,
             cwd=str(project_dir),
         )
         if r.returncode != 0:
             # Try building without specifying binary
             r = subprocess.run(
                 ["cargo", "build", "--release"],
-                capture_output=True, text=True, timeout=600,
+                capture_output=True, text=True,
                 cwd=str(project_dir),
             )
             if r.returncode != 0:
@@ -59,7 +59,7 @@ def _host_rust_systemd(project_dir: Path, port: int, repo_url: str = "") -> str:
         try:
             r = subprocess.run(
                 ["systemctl", "--user", "start", service_name],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True,
             )
             if r.returncode != 0:
                 raise RuntimeError(f"Failed to start service: {r.stderr}")

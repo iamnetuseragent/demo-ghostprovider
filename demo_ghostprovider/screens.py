@@ -5,7 +5,6 @@ import logging
 import random
 import re
 import shutil
-import subprocess
 import time
 
 from rich.style import Style
@@ -509,7 +508,6 @@ class RepoResultScreen(Screen):
         self._url = url
         self._work_dir = work_dir
         self._deploy_result = None
-        self._sudo_password: bytearray | None = None
         super().__init__()
 
     def compose(self) -> ComposeResult:
@@ -636,176 +634,49 @@ class RepoResultScreen(Screen):
 
         self._repo_result = result
 
-    def _start_hosting(self, result: RepoAnalysis, sudo_password: bytearray | None = None) -> None:
+    def _start_hosting(self, result: RepoAnalysis) -> None:
         wd = getattr(self, "_work_dir", None)
-        self.app.push_screen(HostingScreen(result=result, work_dir=wd, sudo_password=sudo_password))
+        self.app.push_screen(HostingScreen(result=result, work_dir=wd))
 
     def confirm_and_deploy(self, result: RepoAnalysis) -> None:
         self._deploy_result = result
-        self.app.push_screen(
-            SudoVerifyScreen(),
-            self._on_sudo_verified,
+        msg = (
+            f"[bold red]Do you really want to host this service?[/bold red]\n\n"
+            f"[yellow]Target:[/yellow] {result.url}\n"
+            f"[yellow]Stack:[/yellow] {result.language}\n"
+            f"[yellow]Verdict:[/yellow] {result.host_recommendation}"
         )
+        if result.host_score < 50:
+            msg += (
+                "\n\n[red]Low hosting confidence — browser may show an empty page.\n"
+                "Still launch it?[/red]"
+            )
+        self.app.push_screen(ConfirmModal(msg), self._on_deploy_confirmed)
 
-    def _on_sudo_verified(self, password: str | None) -> None:
-        if not password:
-            rain = self.query_one(MatrixRain)
-            rain.set_status("══ DEPLOYMENT CANCELLED ══   (Esc — back)")
+    def _on_deploy_confirmed(self, confirmed: bool | None) -> None:
+        if confirmed:
+            result = self._deploy_result
+            if result is not None:
+                self._start_hosting(result)
             return
         result = self._deploy_result
-        if result is None:
-            return
-        # Store password as bytearray for secure handling
-        self._sudo_password = bytearray(password, "utf-8")
-        # Zero the original string from memory
-        password = None
-        self._start_hosting(result, sudo_password=self._sudo_password)
-
-    def _on_nonweb_confirm(self, confirmed: bool) -> None:
-        if confirmed and hasattr(self, "_repo_result"):
-            self.confirm_and_deploy(self._repo_result)
-        elif hasattr(self, "_repo_result"):
-            self._install_tools = []
-            rain = self.query_one(MatrixRain)
-            rain.set_status("══ LAUNCH CANCELLED ══   (Esc — back)")
+        if result is not None:
+            cleanup(result)
+        main = self.app.get_screen("main")
+        main.query_one("#btn-analyze", Button).focus()
+        self.app.switch_screen("main")
 
     def on_key(self, event) -> None:
         if event.key == "enter" and hasattr(self, "_repo_result"):
+            event.stop()
             result = self._repo_result
             if result.can_host:
-                if result.host_score < 50:
-                    msg = (
-                        f"[yellow]Low hosting confidence ({result.host_score}/100)[/yellow]\n\n"
-                        f"{result.category_reason}\n\n"
-                        f"{result.host_recommendation}\n\n"
-                        "[red]This may not be a web application.\n"
-                        "Browser may show an empty page.\n\n"
-                        "Still launch it?[/red]"
-                    )
-                    self.app.push_screen(ConfirmModal(msg), self._on_nonweb_confirm)
-                else:
-                    self.confirm_and_deploy(result)
+                self.confirm_and_deploy(result)
             else:
                 cleanup(result)
                 main = self.app.get_screen("main")
                 main.query_one("#btn-analyze", Button).focus()
                 self.app.switch_screen("main")
-
-
-# ── Sudo Verification Screen ────────────────────────────────────────
-
-class SudoVerifyScreen(Screen):
-    """Screen that asks for and verifies the sudo password.
-
-    Full-screen style matching GithubScreen. Verifies password with
-    ``sudo -S`` before accepting. Retries on wrong password.
-    """
-    BINDINGS = [
-        ("escape", "cancel"),
-    ]
-
-    DEFAULT_CSS = """
-    SudoVerifyScreen {
-        background: #000;
-    }
-    #sudo-verify-container {
-        width: 100%;
-        height: 100%;
-        background: #000;
-    }
-    #sudo-verify-title {
-        align: center top;
-        padding: 1 0;
-        text-align: center;
-    }
-    #sudo-verify-desc {
-        align: center middle;
-        text-align: center;
-        padding: 0 2;
-    }
-    #sudo-verify-input {
-        margin: 0 4;
-    }
-    #sudo-verify-status {
-        align: center middle;
-        text-align: center;
-        padding: 0 2;
-    }
-    #sudo-verify-hint {
-        align: center middle;
-        color: #660000;
-        margin: 1 0;
-    }
-    """
-
-    def compose(self) -> ComposeResult:
-        yield Vertical(
-            Static("[bold red]╔══ SUDO AUTHENTICATION ══╗[/bold red]", id="sudo-verify-title"),
-            Center(
-                Static(
-                    "[yellow]Your sudo password is required for deployment.\n"
-                    "The password is verified locally and NOT stored.[/yellow]",
-                    id="sudo-verify-desc",
-                ),
-            ),
-            Input(
-                placeholder="sudo password",
-                password=True,
-                id="sudo-verify-input",
-            ),
-            Static("", id="sudo-verify-status"),
-            Center(
-                Static(
-                    "[dim red]Enter[/dim red] [dim]verify  |  [/dim]"
-                    "[dim red]Esc[/dim red] [dim]cancel[/dim]",
-                    id="sudo-verify-hint",
-                ),
-            ),
-            id="sudo-verify-container",
-        )
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def on_mount(self) -> None:
-        self.query_one("#sudo-verify-input", Input).focus()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        password = event.value.strip()
-        if not password:
-            return
-        status = self.query_one("#sudo-verify-status", Static)
-        status.update("[yellow]Verifying...[/yellow]")
-        _safe_task(self._verify(password))
-
-    async def _verify(self, password: str) -> None:
-        loop = asyncio.get_running_loop()
-        ok = await loop.run_in_executor(None, self._verify_sudo, password)
-        status = self.query_one("#sudo-verify-status", Static)
-        if ok:
-            status.update("[green]Authentication successful[/green]")
-            await asyncio.sleep(0.5)
-            self.dismiss(password)
-        else:
-            status.update("[red]Wrong password — try again[/red]")
-            self.query_one("#sudo-verify-input", Input).value = ""
-            self.query_one("#sudo-verify-input", Input).focus()
-
-    def _verify_sudo(self, password: str) -> bool:
-        """Verify sudo password by running ``sudo -S true`` with timeout."""
-        try:
-            proc = subprocess.run(
-                ["sudo", "-S", "true"],
-                input=password + "\n",
-                capture_output=True, text=True, timeout=10,
-            )
-            return proc.returncode == 0
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return False
-
-    def on_key(self, event) -> None:
-        if event.key in ("escape", "left"):
-            self.dismiss(None)
 
 
 # ── Hosting Screen ──────────────────────────────────────────────────
@@ -834,10 +705,9 @@ class HostingScreen(Screen):
     def action_pop_screen(self) -> None:
         self.app.pop_screen()
 
-    def __init__(self, result: RepoAnalysis, work_dir: str | None = None, sudo_password: bytearray | None = None):
+    def __init__(self, result: RepoAnalysis, work_dir: str | None = None):
         self._result = result
         self._work_dir = work_dir
-        self._sudo_password = sudo_password
         super().__init__()
 
     def compose(self) -> ComposeResult:
@@ -904,15 +774,8 @@ class HostingScreen(Screen):
                     self._result, 0,
                     verify=False, work_dir=self._work_dir,
                     on_status=_on_status,
-                    sudo_password=self._sudo_password,
                 ),
             )
-
-            # Zero the password after use
-            if self._sudo_password:
-                for i in range(len(self._sudo_password)):
-                    self._sudo_password[i] = 0
-                self._sudo_password = None
 
             # If no services were created (clone failed etc.), show errors and bail
             if not host_result.service_names:
@@ -984,8 +847,25 @@ class HostingScreen(Screen):
 # ── Modals ──────────────────────────────────────────────────────────
 
 class ConfirmModal(Screen):
-    def __init__(self, message: str, yes_action: str = ""):
+    DEFAULT_CSS = """
+    ConfirmModal {
+        background: #000;
+    }
+    #modal-title {
+        align: center top;
+        padding: 1 0;
+        text-align: center;
+    }
+    #modal-hint {
+        align: center middle;
+        color: #660000;
+        margin: 1 0;
+    }
+    """
+
+    def __init__(self, message: str, title: str = "CONFIRM", yes_action: str = ""):
         self._message = message
+        self._title = title
         self._yes_action = yes_action
         super().__init__()
 
@@ -993,6 +873,7 @@ class ConfirmModal(Screen):
         self.query_one("#modal-yes", Button).focus()
 
     def compose(self) -> ComposeResult:
+        yield Static(f"[bold red]╔══ {self._title} ══╗[/bold red]", id="modal-title")
         yield Center(
             Static(self._message, id="modal-msg"),
         )
@@ -1001,6 +882,15 @@ class ConfirmModal(Screen):
                 Button("  YES  ", id="modal-yes", variant="primary"),
                 Button("  NO   ", id="modal-no", variant="default"),
                 id="modal-buttons",
+            ),
+        )
+        yield Center(
+            Static(
+                "[dim red]←[/dim red] [dim]Yes  |  [/dim]"
+                "[dim red]→[/dim red] [dim]No  |  [/dim]"
+                "[dim red]Enter[/dim red] [dim]select  |  [/dim]"
+                "[dim red]Esc[/dim red] [dim]cancel[/dim]",
+                id="modal-hint",
             ),
         )
 
@@ -1294,7 +1184,6 @@ class ServiceListScreen(Screen):
             url_text = urls[0] if urls else "no port"
 
             msg = (
-                f"[bold red]╔══ DELETE SERVICE ══╗[/bold red]\n\n"
                 f"[yellow]Service:[/yellow] {display_name}\n"
                 f"[yellow]Status:[/yellow] {service.state}\n"
                 f"[yellow]Address:[/yellow] {url_text}\n\n"
@@ -1307,7 +1196,10 @@ class ServiceListScreen(Screen):
         else:
             msg = f"[red]Delete service '{name}'?[/red]"
 
-        self.app.push_screen(ConfirmModal(msg), lambda confirmed: self._on_remove_confirmed(confirmed, name))
+        self.app.push_screen(
+            ConfirmModal(msg, title="DELETE"),
+            lambda confirmed: self._on_remove_confirmed(confirmed, name),
+        )
 
     def _on_remove_confirmed(self, confirmed: bool, name: str) -> None:
         if confirmed:
