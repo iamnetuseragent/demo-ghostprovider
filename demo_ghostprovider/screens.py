@@ -1089,7 +1089,7 @@ class ServiceListScreen(Screen):
         action = "stop" if service.state in ("active", "running") else "start"
         label = "stopping" if action == "stop" else "starting"
         self._pending[service.name] = label
-        self.set_timer(0, lambda: self._rebuild_rows())
+        self.call_after_refresh(self._rebuild_rows)
         _safe_task(self._exec_action(action, service.name))
 
     def action_toggle_selected(self) -> None:
@@ -1106,7 +1106,7 @@ class ServiceListScreen(Screen):
         if 0 <= idx < len(self._containers):
             container = self._containers[idx]
             self._pending[container.name] = "restarting"
-            self.set_timer(0, lambda: self._rebuild_rows())
+            self.call_after_refresh(self._rebuild_rows)
             _safe_task(self._exec_restart(container.name))
 
     def action_remove_selected(self) -> None:
