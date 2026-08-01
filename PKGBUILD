@@ -1,19 +1,19 @@
 pkgname=demo-ghostprovider
-pkgver=1.3.0
+pkgver=1.7.0
 pkgrel=1
 pkgdesc="TUI for self-hosting & localhost management"
 arch=('any')
 url="https://github.com/iamnetuseragent/demo-ghostprovider"
 license=('custom:Source-Available')
 depends=('python' 'git' 'python-pip')
-makedepends=('git')
-# Pinned to commit b152865 — update pkgver and sha256sums on each release
-_commit=bfd771f0b3cf0d70fc54ddbd076b067515b94a33
-source=("$pkgname-$pkgver.tar.gz::git+ssh://git@github.com/iamnetuseragent/demo-ghostprovider.git#commit=$_commit")
+makedepends=('git' 'python-virtualenv')
+# Pinned to the v1.7.0 tag — update pkgver and _commit on each release
+_commit=3f9a825717557b82852ab2be964b689b2d31bf77
+source=("$pkgname-$pkgver.tar.gz::git+https://github.com/iamnetuseragent/demo-ghostprovider.git#commit=$_commit")
 sha256sums=('SKIP')
 
 package() {
-  cd "$srcdir/$pkgname-$_commit"
+  cd "$srcdir/$pkgname-$pkgver.tar.gz"
 
   install -dm755 "$pkgdir/usr/bin"
   cat > "$pkgdir/usr/bin/demo-ghostprovider" << 'EOF'
