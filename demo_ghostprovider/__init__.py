@@ -1,3 +1,3 @@
 """demo_ghostprovider — cyberpunk 2077 themed localhost hosting analyzer."""
 
-__version__ = "1.7.1"
+__version__ = "1.7.2"
