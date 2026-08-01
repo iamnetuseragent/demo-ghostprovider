@@ -7,8 +7,8 @@ url="https://github.com/iamnetuseragent/demo-ghostprovider"
 license=('custom:Source-Available')
 depends=('python' 'git' 'python-pip')
 makedepends=('git' 'python-virtualenv')
-# Pinned to the v1.7.0 tag — update pkgver and _commit on each release
-_commit=3f9a825717557b82852ab2be964b689b2d31bf77
+# Pinned to the v1.7.1 release commit — update pkgver and _commit on each release
+_commit=8b4c6c9e45f42efd0d0c00718c2fc143eb52c7d2
 source=("$pkgname-$pkgver.tar.gz::git+https://github.com/iamnetuseragent/demo-ghostprovider.git#commit=$_commit")
 sha256sums=('SKIP')
 
