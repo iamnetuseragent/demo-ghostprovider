@@ -902,16 +902,20 @@ class ConfirmModal(Screen):
 
     def on_key(self, event) -> None:
         if event.key == "escape":
+            event.stop()
             self.dismiss(False)
         elif event.key == "enter":
+            event.stop()
             focused = self.focused
             if focused and focused.id == "modal-yes":
                 self.dismiss(True)
             elif focused and focused.id == "modal-no":
                 self.dismiss(False)
         elif event.key == "right":
+            event.stop()
             self.query_one("#modal-no", Button).focus()
         elif event.key == "left":
+            event.stop()
             self.query_one("#modal-yes", Button).focus()
 
 
