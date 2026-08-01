@@ -17,7 +17,7 @@ if command -v systemctl &>/dev/null; then
       systemctl --user stop "$unit" 2>/dev/null || true
       systemctl --user disable "$unit" 2>/dev/null || true
       rm -f "${HOME}/.config/systemd/user/${unit}"
-    done
+    done || true
   systemctl --user daemon-reload 2>/dev/null || true
 fi
 
