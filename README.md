@@ -2,14 +2,14 @@
 
 > <p align="center">GhostProvider is an open-source platform that simplifies self-hosting by automating deployment, service management, discovery, and clean removal.</p>
 
-![GHOST PROVIDER Panel](GHOSTPROVIDER%20PANEL.JPEG)
+![GHOST PROVIDER Panel](assets/GHOSTPROVIDER%20PANEL.JPEG)
 
 ## One-Click Deploy
 
 Paste a GitHub URL — get a host score — deploy as a systemd service.
 Private, local, no third parties.
 
-![Demo GhostProvider](demo-ghostprovider.png)
+![Demo GhostProvider](assets/demo-ghostprovider.webp)
 
 ## Requirements
 
@@ -73,13 +73,13 @@ This is a restricted demo version of GhostProvider that only supports deploying 
 ## Quick Start (Linux)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/installation/install.sh | bash
 ```
 
 ## Uninstall
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/uninstall.sh | bash
+curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/installation/uninstall.sh | bash
 ```
 
 ## Install (Arch Linux)
@@ -87,7 +87,7 @@ curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/m
 ```bash
 git clone https://github.com/iamnetuseragent/demo-ghostprovider.git
 cd demo-ghostprovider
-makepkg -si
+makepkg -si -p installation/PKGBUILD
 ```
 
 ## Usage

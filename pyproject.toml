@@ -17,6 +17,7 @@ dependencies = [
 demo-ghostprovider = "demo_ghostprovider.__main__:run"
 
 [tool.setuptools.packages.find]
+where = ["software"]
 include = ["demo_ghostprovider*"]
 
 [tool.setuptools.package-data]
