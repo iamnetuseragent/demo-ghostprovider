@@ -8,7 +8,7 @@ license=('custom:Source-Available')
 depends=('python' 'git' 'python-pip')
 makedepends=('git' 'python-virtualenv')
 # Pinned to the v1.7.3 release commit — update pkgver and _commit on each release
-_commit=8a21c6797ea5f409ca1e944a04336a15fec5c721
+_commit=2f32fcc4bbc8248d6d70fb5ec0080834092be1d6
 source=("$pkgname-$pkgver.tar.gz::git+https://github.com/iamnetuseragent/demo-ghostprovider.git#commit=$_commit")
 sha256sums=('SKIP')
 
