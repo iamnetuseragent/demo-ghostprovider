@@ -1,10 +1,14 @@
 """GitHub URL and work directory input screens."""
 
+from typing import ClassVar
+
 from textual.app import ComposeResult
 from textual.containers import Center, Vertical
 from textual.screen import Screen
 from textual.widgets import Input, Static
 
+from demo_ghostprovider.hoster.github import parse_github_url
+from demo_ghostprovider.hoster.recipes import find_recipe
 from demo_ghostprovider.screens.deploy import RepoResultScreen
 
 
@@ -15,21 +19,27 @@ class GithubScreen(Screen):
             Center(
                 Static(
                     "[yellow]Paste a GitHub repository URL below.\n"
-                    "Ghostprovider will analyse whether it can be hosted.[/yellow]",
+                    "Supported demo services: VERT, SearXNG, Memos.[/yellow]",
                     id="github-desc",
-                ),
-            ),
+                )
+                ,
+            )
+            ,
             Input(
                 placeholder="https://github.com/user/repository",
                 id="github-input",
-            ),
+            )
+            ,
+            Static("", id="github-error"),
             Center(
                 Static(
-                    "[dim red]Enter[/dim red] [dim]analyse  |  [/dim]"
+                    "[dim red]Enter[/dim red] [dim]continue  |  [/dim]"
                     "[dim red]← Esc[/dim red] [dim]return[/dim]",
                     id="github-hint",
-                ),
-            ),
+                )
+                ,
+            )
+            ,
             id="github-container",
         )
 
@@ -40,11 +50,25 @@ class GithubScreen(Screen):
         inp = self.query_one("#github-input", Input)
         inp.value = ""
         inp.focus()
+        self.query_one("#github-error", Static).update("")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         url = event.value.strip()
-        if url:
-            self.app.push_screen(WorkDirPromptScreen(url=url))
+        if not url:
+            return
+        err = self.query_one("#github-error", Static)
+        parsed = parse_github_url(url)
+        if not parsed:
+            err.update("[red]✗ Invalid GitHub URL format[/red]")
+            return
+        if find_recipe(parsed[0], parsed[1]) is None:
+            err.update(
+                "[red]✗ Unsupported service.[/red]\n"
+                "[yellow]Supported demo services: VERT, SearXNG, Memos.[/yellow]"
+            )
+            return
+        err.update("")
+        self.app.push_screen(WorkDirPromptScreen(url=url))
 
     def on_key(self, event) -> None:
         if event.key in ("escape", "left"):
@@ -52,7 +76,7 @@ class GithubScreen(Screen):
 
 
 class WorkDirPromptScreen(Screen):
-    BINDINGS = [
+    BINDINGS: ClassVar[list[tuple[str, str]]] = [
         ("escape", "pop_screen"),
         ("left", "pop_screen"),
     ]
@@ -95,25 +119,31 @@ class WorkDirPromptScreen(Screen):
             Static(
                 "[bold red]╔══ WORK DIRECTORY ══╗[/bold red]",
                 id="wd-title",
-            ),
+            )
+            ,
             Center(
                 Static(
                     "[yellow]Which directory to clone the repository into?\n"
                     "Leave empty for a temporary folder.[/yellow]",
                     id="wd-desc",
-                ),
-            ),
+                )
+                ,
+            )
+            ,
             Input(
                 placeholder="~/demo_ghostprovider (Enter — confirm, Esc — back)",
                 id="wd-input",
-            ),
+            )
+            ,
             Center(
                 Static(
                     "[dim red]Enter[/dim red] [dim]continue  |  [/dim]"
                     "[dim red]Esc[/dim red] [dim]back[/dim]",
                     id="wd-hint",
-                ),
-            ),
+                )
+                ,
+            )
+            ,
             id="wd-container",
         )
 
@@ -125,7 +155,7 @@ class WorkDirPromptScreen(Screen):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         val = event.value.strip()
-        work_dir = val if val else None
+        work_dir = val or None
         self.app.push_screen(RepoResultScreen(url=self._url, work_dir=work_dir))
 
     def on_key(self, event) -> None:

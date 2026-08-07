@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -9,16 +10,21 @@ from textual.screen import Screen
 from textual.widgets import Button, ListItem, ListView, Static, Switch
 
 from demo_ghostprovider.analyzer import fingerprint_port
-from demo_ghostprovider.services import (
-    list_services, start_service, stop_service, restart_service,
-    remove_service, wait_service_ready, service_urls,
-)
 from demo_ghostprovider.screens.modals import ConfirmModal
 from demo_ghostprovider.screens.widgets import _safe_task
+from demo_ghostprovider.services import (
+    list_services,
+    remove_service,
+    restart_service,
+    service_urls,
+    start_service,
+    stop_service,
+    wait_service_ready,
+)
 
 
 class ServiceListScreen(Screen):
-    BINDINGS = [
+    BINDINGS: ClassVar[list[tuple[str, str]]] = [
         ("escape", "pop_screen"),
         ("left", "pop_screen"),
         ("enter", "toggle_selected"),
@@ -50,7 +56,8 @@ class ServiceListScreen(Screen):
                 "[bold #ff0066]│[/bold #ff0066]  [bold #00ffff]↑↓[/bold #00ffff] [dim]NAVIGATE[/dim]  [bold #cc00ff]Enter/E[/bold #cc00ff] [dim]TOGGLE[/dim]  [bold #ff6600]R[/bold #ff6600] [dim]RESTART[/dim]  [bold #ff3333]X/DEL[/bold #ff3333] [dim]REMOVE[/dim]  [bold #ff0066]← Esc[/bold #ff0066] [dim]BACK[/dim]  [bold #ff0066]│[/bold #ff0066]\n"
                 "[bold #ff0066]└──────────────────────────────────────────────────────────────────────────────┘[/bold #ff0066]",
                 id="services-hint",
-            ),
+            )
+            ,
             id="services-container",
         )
 
@@ -66,7 +73,7 @@ class ServiceListScreen(Screen):
             self._pending.clear()
             try:
                 self._rebuild_rows()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 if hasattr(self, "app") and self.app:
                     self.app.notify(f"Rebuild error: {e}", severity="error", timeout=5)
 
@@ -76,7 +83,7 @@ class ServiceListScreen(Screen):
             return
         try:
             list_view = self.query_one("#services-list", ListView)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return
         for i, child in enumerate(list_view.children):
             if i >= len(self._containers):
@@ -97,7 +104,7 @@ class ServiceListScreen(Screen):
                         ind.update("[bold #ff3333]◎[/bold #ff3333]")
                     else:
                         ind.update("[bold #330000]◎[/bold #330000]")
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
 
     def _rebuild_rows(self) -> None:
@@ -132,7 +139,7 @@ class ServiceListScreen(Screen):
                         svc_name = fp.service_name
                         self._fingerprints[c.name] = svc_name
                         self._fingerprints[str(port)] = svc_name
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
 
             if svc_name:
@@ -164,7 +171,8 @@ class ServiceListScreen(Screen):
                     Switch(value=switch_value, classes="svc-toggle"),
                     *buttons,
                     classes="svc-row",
-                ),
+                )
+                ,
             )
             list_view.append(item)
 
@@ -217,7 +225,7 @@ class ServiceListScreen(Screen):
                         if name not in self._pending:
                             self._toggle_at_index(idx)
                     return
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
 
     async def _exec_action(self, action: str, name: str) -> None:
@@ -234,7 +242,7 @@ class ServiceListScreen(Screen):
             else:
                 if hasattr(self, "app") and self.app:
                     self.app.notify(msg, severity="error", timeout=5)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             if hasattr(self, "app") and self.app:
                 self.app.notify(f"Action error: {e}", severity="error", timeout=5)
         await self._refresh()
@@ -250,7 +258,7 @@ class ServiceListScreen(Screen):
             else:
                 if hasattr(self, "app") and self.app:
                     self.app.notify(msg, severity="error", timeout=5)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             if hasattr(self, "app") and self.app:
                 self.app.notify(f"Restart error: {e}", severity="error", timeout=5)
         await self._refresh()
@@ -319,7 +327,7 @@ class ServiceListScreen(Screen):
             else:
                 if hasattr(self, "app") and self.app:
                     self.app.notify(msg, timeout=3)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             if hasattr(self, "app") and self.app:
                 self.app.notify(f"Remove error: {e}", severity="error", timeout=5)
         await self._refresh()

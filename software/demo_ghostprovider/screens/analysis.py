@@ -1,17 +1,18 @@
-"""System analysis screen (Matrix rain boot sequence)."""
+"""System analysis screen."""
 
 import asyncio
 import time
+from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.screen import Screen
 
-from demo_ghostprovider.analyzer import run_analysis, AnalysisResult
+from demo_ghostprovider.analyzer import AnalysisResult, run_analysis
 from demo_ghostprovider.screens.widgets import MatrixRain, _safe_task
 
 
 class AnalysisScreen(Screen):
-    BINDINGS = [
+    BINDINGS: ClassVar[list[tuple[str, str]]] = [
         ("escape", "pop_screen"),
         ("left", "pop_screen"),
     ]

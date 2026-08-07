@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from typing import Callable
+from collections.abc import Callable
 
 logger = logging.getLogger("demo_ghostprovider.git")
 
@@ -88,6 +88,7 @@ def _git_clone(url: str, dest: str, retries: int = 5,
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True,
                     timeout=timeout, env=env,
+                    check=False,
                 )
                 if proc.returncode == 0 and os.path.isdir(os.path.join(dest, ".git")):
                     _emit("clone complete")
@@ -127,6 +128,7 @@ def _git_clone(url: str, dest: str, retries: int = 5,
                 proc = subprocess.run(
                     curl_cmd,
                     capture_output=True, text=True, timeout=300,
+                    check=False,
                 )
                 if proc.returncode == 0 and os.path.getsize(tmp_path) > 1000:
                     _emit("extracting tarball...")
@@ -134,10 +136,11 @@ def _git_clone(url: str, dest: str, retries: int = 5,
                     proc2 = subprocess.run(
                         ["tar", "xzf", tmp_path, "-C", dest, "--strip-components=1"],
                         capture_output=True, text=True, timeout=120,
+                        check=False,
                     )
                     os.remove(tmp_path)
                     if proc2.returncode == 0:
-                        subprocess.run(["git", "init"], capture_output=True, cwd=dest, timeout=10)
+                        subprocess.run(["git", "init"], capture_output=True, cwd=dest, timeout=10, check=False)
                         _emit("tarball download complete")
                         return True
                     else:

@@ -9,14 +9,16 @@ from demo_ghostprovider.services.models import ServiceInfo
 def _is_systemd_service(unit_name: str) -> bool:
     """Check if a systemd unit is a service (not socket, timer, etc)."""
     try:
-        r = subprocess.run(
+        subprocess.run(
             ["systemctl", "--user", "is-enabled", "--quiet", unit_name],
             capture_output=True, timeout=5,
+            check=False,
         )
         # Also check if it's a .service unit
         r2 = subprocess.run(
             ["systemctl", "--user", "list-unit-files", f"{unit_name}.service"],
             capture_output=True, text=True, timeout=5,
+            check=False,
         )
         return unit_name in r2.stdout
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -29,6 +31,7 @@ def _get_unit_property(unit_name: str, prop: str) -> str:
         r = subprocess.run(
             ["systemctl", "--user", "show", unit_name, f"--property={prop}", "--value"],
             capture_output=True, text=True, timeout=5,
+            check=False,
         )
         if r.returncode == 0:
             return r.stdout.strip()
@@ -46,12 +49,12 @@ def _get_unit_ports(unit_name: str) -> list[int]:
         r = subprocess.run(
             ["systemctl", "--user", "list-units", "--type=socket", "--state=running", "--plain", "--no-legend"],
             capture_output=True, text=True, timeout=5,
+            check=False,
         )
         if r.returncode == 0:
             for line in r.stdout.strip().split("\n"):
                 parts = line.split()
                 if len(parts) >= 1:
-                    sock_name = parts[0].replace(".socket", "")
                     # Check if this socket is for our service
                     listen = _get_unit_property(parts[0], "ListenStream")
                     if listen and unit_name in _get_unit_property(parts[0], "WantedBy"):
@@ -72,12 +75,14 @@ def _get_unit_ports(unit_name: str) -> list[int]:
                 cg = subprocess.run(
                     ["systemctl", "--user", "show", f"{unit_name}.service", "--property=ControlGroup", "--value"],
                     capture_output=True, text=True, timeout=5,
+                    check=False,
                 )
                 if cg.returncode == 0 and cg.stdout.strip():
                     cg_path = f"/sys/fs/cgroup{cg.stdout.strip()}"
                     procs = subprocess.run(
                         ["bash", "-c", f"cat {cg_path}/cgroup.procs 2>/dev/null"],
                         capture_output=True, text=True, timeout=5,
+                        check=False,
                     )
                     if procs.returncode == 0:
                         for pid in procs.stdout.strip().split("\n"):
@@ -89,6 +94,7 @@ def _get_unit_ports(unit_name: str) -> list[int]:
             r = subprocess.run(
                 ["ss", "-tlnp"],
                 capture_output=True, text=True, timeout=5,
+                check=False,
             )
             if r.returncode == 0:
                 for line in r.stdout.strip().split("\n")[1:]:
@@ -122,14 +128,14 @@ def list_services() -> list[ServiceInfo]:
 
     # Load state to know which services belong to this instance
     state = _load_state()
-    gp_services = {k for k in state.keys() if k != "version"}
+    gp_services = {k for k in state if k != "version"}
 
     try:
         # List all user-level services (running or stopped)
         cmd = ["systemctl", "--user", "list-units", "--type=service", "--plain", "--no-legend",
                "--all"]
 
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
         if r.returncode != 0:
             return services
 
@@ -173,7 +179,8 @@ def list_services() -> list[ServiceInfo]:
                 ports=ports,
                 exec_start=exec_start,
                 urls=urls,
-            ))
+            )
+            )
 
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass

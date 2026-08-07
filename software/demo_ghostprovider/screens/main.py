@@ -18,13 +18,16 @@ class MainScreen(Screen):
                 "Fail to protect it, and you fail to protect your future.\n"
                 "Only you decide what that future will be.[/red]",
                 id="description",
-            ),
+            )
+            ,
             Center(
                 Button("▶  INITIALIZE SYSTEM SCAN  ◀", id="btn-analyze", variant="primary"),
-            ),
+            )
+            ,
             Center(
                 Button("☰  MANAGE ACTIVE SERVICES  ☰", id="btn-services", variant="default"),
-            ),
+            )
+            ,
             Static(
                 "[dim red]────────────────────────────────[/dim red]\n"
                 "[dim red]↑↓[/dim red] [dim]navigate  |  [/dim]"
@@ -32,7 +35,8 @@ class MainScreen(Screen):
                 "[dim red]← Esc[/dim red] [dim]exit  |  [/dim]"
                 "[dim red]Ctrl+Shift+C[/dim red] [dim]copy[/dim]",
                 id="hint",
-            ),
+            )
+            ,
             id="main-container",
         )
 

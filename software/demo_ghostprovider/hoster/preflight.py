@@ -11,6 +11,7 @@ def preflight_check() -> list[str]:
         r = subprocess.run(
             ["systemctl", "--user", "is-system-running"],
             capture_output=True, text=True, timeout=5,
+            check=False,
         )
         if r.returncode != 0 and "degraded" not in r.stdout:
             issues.append("systemd not running properly")
@@ -23,6 +24,7 @@ def preflight_check() -> list[str]:
         r = subprocess.run(
             ["systemd-nspawn", "--version"],
             capture_output=True, text=True, timeout=5,
+            check=False,
         )
         if r.returncode != 0:
             issues.append("systemd-nspawn not available")
@@ -35,6 +37,7 @@ def preflight_check() -> list[str]:
         r = subprocess.run(
             ["python3", "-c", "import urllib.request; urllib.request.urlopen('https://pypi.org', timeout=5)"],
             capture_output=True, timeout=10,
+            check=False,
         )
         if r.returncode != 0:
             issues.append("No network connectivity")

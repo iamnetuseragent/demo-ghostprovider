@@ -1,52 +1,13 @@
 """Utility helpers for hoster modules."""
 
-import json
 import logging
 import re
 import socket
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 logger = logging.getLogger("demo_ghostprovider.hoster._helpers")
-
-
-def _read_package_json(project_dir: Path) -> dict | None:
-    pkg_file = project_dir / "package.json"
-    if not pkg_file.exists():
-        return None
-    try:
-        return json.loads(pkg_file.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
-def _resolve_start_cmd(cmd: str, project_dir: Path) -> str:
-    """Resolve relative paths in start commands to absolute paths.
-
-    systemd requires absolute paths in ExecStart. This converts
-    commands like './ghost-server --port 8300' to absolute paths.
-    """
-    if not cmd:
-        return cmd
-    parts = cmd.split(None, 1)
-    if not parts:
-        return cmd
-    executable = parts[0]
-    rest = parts[1] if len(parts) > 1 else ""
-    # Only resolve if it's a relative path (not absolute, not a shell builtin)
-    if executable.startswith("/") or executable.startswith("/bin/"):
-        return cmd
-    # Check if the executable exists relative to project_dir
-    candidate = project_dir / executable
-    if candidate.is_file():
-        return f"{candidate} {rest}"
-    # Try with ./ prefix stripped
-    if executable.startswith("./"):
-        candidate = project_dir / executable[2:]
-        if candidate.is_file():
-            return f"{candidate} {rest}"
-    return cmd
 
 
 _DANGEROUS_CMD_PATTERNS: list[re.Pattern] = [
@@ -78,7 +39,7 @@ def _run_build_cmd(cmd: str, project_dir: Path, timeout: int = 900,
                    on_status: Callable[[str], None] | None = None) -> subprocess.CompletedProcess:
     """Run a build command safely with validation and explicit shell invocation.
 
-    Build commands from ghostproviderfile legitimately contain shell syntax
+    Build steps for the demo services legitimately contain shell syntax
     (``&&``, ``||``, ``cd``, etc.), so they must be run via ``/bin/sh -c``.
     This function:
 
@@ -96,6 +57,7 @@ def _run_build_cmd(cmd: str, project_dir: Path, timeout: int = 900,
             capture_output=True, text=True,
             timeout=timeout, cwd=str(project_dir),
             env=env,
+            check=False,
         )
         if result.returncode != 0:
             logger.warning("Build command failed (exit %d): %s", result.returncode, result.stderr[:300])

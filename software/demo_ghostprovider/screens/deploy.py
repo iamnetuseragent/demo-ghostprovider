@@ -2,6 +2,7 @@
 
 import asyncio
 import shutil
+from typing import ClassVar
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -10,16 +11,21 @@ from textual.screen import Screen
 from textual.widgets import Button, ProgressBar, RichLog, Static
 
 from demo_ghostprovider.hoster import (
-    analyze_repo, host_project, cleanup, preflight_check,
-    verify_deployment, RepoAnalysis,
+    RepoAnalysis,
+    cleanup,
+    deploy_service,
+    preflight_check,
+    resolve_service,
+    verify_deployment,
 )
+from demo_ghostprovider.hoster.recipes import DemoRecipe
 from demo_ghostprovider.screens.main import MainScreen
 from demo_ghostprovider.screens.modals import ConfirmModal
 from demo_ghostprovider.screens.widgets import MatrixRain, _hex, _safe_task
 
 
 class RepoResultScreen(Screen):
-    BINDINGS = [
+    BINDINGS: ClassVar[list[tuple[str, str]]] = [
         ("escape", "pop_screen"),
         ("left", "pop_screen"),
     ]
@@ -30,7 +36,8 @@ class RepoResultScreen(Screen):
     def __init__(self, url: str, work_dir: str | None = None):
         self._url = url
         self._work_dir = work_dir
-        self._deploy_result = None
+        self._recipe: DemoRecipe | None = None
+        self._repo_result: RepoAnalysis | None = None
         super().__init__()
 
     def compose(self) -> ComposeResult:
@@ -51,129 +58,65 @@ class RepoResultScreen(Screen):
             rain.set_status("Enter — return")
             return
 
-        await rain.typewrite_status("cloning repository...", speed=0.04)
+        await rain.typewrite_status("resolving target...", speed=0.04)
         await asyncio.sleep(0.2)
 
         loop = asyncio.get_running_loop()
         try:
-            result = await loop.run_in_executor(
-                None, lambda: analyze_repo(self._url, work_dir=self._work_dir),
+            analysis, recipe, error = await loop.run_in_executor(
+                None, lambda: resolve_service(self._url),
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             rain.write_fail(f"ANALYSIS FAILED: {e}", detail="ERR")
             rain.write_fail("check network connection and URL", detail="ERR")
             rain.set_status("Enter — return")
-            self._repo_result = None
             return
 
-        await rain.typewrite_status("decompiling structure...", speed=0.04)
-        await asyncio.sleep(0.2)
+        rain.set_progress(0, 4)
+        await rain.typewrite_ok(analysis.url, addr="TARGET", speed=0.02)
+        await rain.typewrite_ok(analysis.owner or "?", addr="OWNER", speed=0.02)
+        await rain.typewrite_ok(analysis.name or "?", addr="REPO", speed=0.02)
+        rain.set_progress(1, 4)
 
-        rain.set_progress(0, 5)
-        await rain.typewrite_ok(result.url, addr="TARGET", speed=0.02)
-        await rain.typewrite_ok(result.owner or "?", addr="OWNER", speed=0.02)
-        await rain.typewrite_ok(result.name or "?", addr="REPO", speed=0.02)
-        rain.set_progress(1, 5)
-
-        exists_str = "VERIFIED" if result.exists else "NOT FOUND"
-        await rain.typewrite_ok(exists_str, addr="STATUS", speed=0.02)
-        await rain.typewrite_ok(result.language, addr="LANG", speed=0.02)
-        rain.set_progress(2, 5)
-
-        if result.errors:
-            for err in result.errors:
-                rain.write_fail(err, detail="ERROR")
-            await asyncio.sleep(0.2)
-
-        found_files = []
-        if result.has_package_json:
-            found_files.append("NODE")
-        if result.has_requirements:
-            found_files.append("PYTHON")
-        if result.has_go_mod:
-            found_files.append("GO")
-        if result.has_cargo:
-            found_files.append("RUST")
-        if result.has_index:
-            found_files.append("HTML")
-        if found_files:
-            await rain.typewrite_ok(f"Files: {', '.join(found_files)}", addr="DEPS", speed=0.01)
-        rain.set_progress(3, 5)
-
-        # Show app category
-        cat_labels = {
-            "media_server": "MEDIA SERVER",
-            "web_app": "WEB APP",
-            "api_server": "API SERVER",
-            "search_engine": "SEARCH ENGINE",
-            "desktop_app": "DESKTOP APP",
-            "cli": "CLI TOOL",
-            "library": "LIBRARY",
-            "unknown": "UNKNOWN",
-        }
-        cat_label = cat_labels.get(result.app_category, result.app_category.upper())
-        await rain.typewrite_ok(cat_label, addr="TYPE", speed=0.02)
-
-        if result.app_category == "search_engine":
-            await rain.typewrite_ok(
-                "🔍 Search engine — serves HTML, works in browser",
-                addr="INFO", speed=0.01,
-            )
-        elif not result.web_app_verified:
-            await rain.typewrite_ok(
-                result.category_reason or "⚠ May not work in browser",
-                addr="WARN", speed=0.01,
-            )
-
-        # Show deep analysis
-        if result.web_framework:
-            await rain.typewrite_ok(
-                f"web: {result.web_framework}",
-                addr="FRAME", speed=0.02,
-            )
-        if result.has_http_server:
-            await rain.typewrite_ok("HTTP server detected in source", addr="SERVE", speed=0.02)
-        if result.has_cli and not result.has_http_server:
-            await rain.typewrite_ok("CLI tool (no HTTP server)", addr="CLI", speed=0.02)
-        if result.has_desktop_gui:
-            await rain.typewrite_ok("Desktop/GUI application", addr="GUI", speed=0.02)
-        if result.is_library:
-            await rain.typewrite_ok("Library-type project", addr="LIB", speed=0.02)
-
-        rain.set_progress(4, 5)
-        if result.can_host:
-            score_str = f"SCORE {result.host_score}/100"
-            label = "✓ TARGET COMPATIBLE" if result.host_score >= 50 else "⚠ LOW CONFIDENCE"
-            await rain.typewrite_ok(f"{label}  {score_str}", addr="", speed=0.02)
-            await rain.typewrite_ok(result.host_recommendation, addr="", speed=0.02)
-            rain.set_progress(5, 5)
-            rain.set_status(
-                "══ ENTER — LAUNCH ══   (Esc — back)"
-            )
-        else:
-            rain.write_fail("✗ TARGET INCOMPATIBLE", detail="")
-            rain.write_fail(result.reason, detail="")
+        if error is not None or recipe is None:
+            rain.set_progress(4, 4)
+            for line in (error or "Unsupported service").splitlines():
+                rain.write_fail(line, detail="ERROR")
+            rain.write_fail("✗ UNSUPPORTED SERVICE", detail="")
             rain.set_status("Enter — return")
+            return
 
-        self._repo_result = result
+        rain.set_progress(2, 4)
+        exists_str = "VERIFIED" if analysis.exists else "NOT FOUND"
+        await rain.typewrite_ok(exists_str, addr="STATUS", speed=0.02)
+        await rain.typewrite_ok(recipe.language, addr="LANG", speed=0.02)
+        rain.set_progress(3, 4)
+
+        if analysis.errors:
+            for err in analysis.errors:
+                rain.write_fail(err, detail="ERROR")
+
+        await rain.typewrite_ok(recipe.description, addr="INFO", speed=0.01)
+
+        analysis.can_host = True
+        rain.set_progress(4, 4)
+        await rain.typewrite_ok("✓ SUPPORTED DEMO SERVICE", addr="", speed=0.02)
+        rain.set_status("══ ENTER — LAUNCH ══   (Esc — back)")
+
+        self._repo_result = analysis
+        self._recipe = recipe
 
     def _start_hosting(self, result: RepoAnalysis) -> None:
         wd = getattr(self, "_work_dir", None)
-        self.app.push_screen(HostingScreen(result=result, work_dir=wd))
+        self.app.push_screen(HostingScreen(result=result, recipe=self._recipe, work_dir=wd))
 
     def confirm_and_deploy(self, result: RepoAnalysis) -> None:
         self._deploy_result = result
         msg = (
             f"[bold red]Do you really want to host this service?[/bold red]\n\n"
             f"[yellow]Target:[/yellow] {result.url}\n"
-            f"[yellow]Stack:[/yellow] {result.language}\n"
-            f"[yellow]Verdict:[/yellow] {result.host_recommendation}"
+            f"[yellow]Language:[/yellow] {result.language}"
         )
-        if result.host_score < 50:
-            msg += (
-                "\n\n[red]Low hosting confidence — browser may show an empty page.\n"
-                "Still launch it?[/red]"
-            )
         self.app.push_screen(ConfirmModal(msg), self._on_deploy_confirmed)
 
     def _on_deploy_confirmed(self, confirmed: bool | None) -> None:
@@ -190,7 +133,7 @@ class RepoResultScreen(Screen):
         self.app.switch_screen("main")
 
     def on_key(self, event) -> None:
-        if event.key == "enter" and hasattr(self, "_repo_result"):
+        if event.key == "enter" and getattr(self, "_repo_result", None):
             event.stop()
             result = self._repo_result
             if result.can_host:
@@ -203,7 +146,7 @@ class RepoResultScreen(Screen):
 
 
 class HostingScreen(Screen):
-    BINDINGS = [
+    BINDINGS: ClassVar[list[tuple[str, str]]] = [
         ("escape", "pop_screen"),
         ("left", "pop_screen"),
     ]
@@ -226,8 +169,10 @@ class HostingScreen(Screen):
     def action_pop_screen(self) -> None:
         self.app.pop_screen()
 
-    def __init__(self, result: RepoAnalysis, work_dir: str | None = None):
+    def __init__(self, result: RepoAnalysis, recipe: DemoRecipe | None = None,
+                 work_dir: str | None = None):
         self._result = result
+        self._recipe = recipe
         self._work_dir = work_dir
         super().__init__()
 
@@ -237,7 +182,8 @@ class HostingScreen(Screen):
             RichLog(id="host-log", highlight=True, markup=True),
             Center(
                 ProgressBar(total=4, id="host-progress", show_eta=False),
-            ),
+            )
+            ,
             id="hosting-container",
         )
 
@@ -291,11 +237,11 @@ class HostingScreen(Screen):
                     )
 
             host_result = await loop.run_in_executor(
-                None, lambda: host_project(
-                    self._result, 0,
-                    verify=False, work_dir=self._work_dir,
+                None, lambda: deploy_service(
+                    self._result, self._recipe, work_dir=self._work_dir,
                     on_status=_on_status,
-                ),
+                )
+                ,
             )
 
             # If no services were created (clone failed etc.), show errors and bail
@@ -320,21 +266,20 @@ class HostingScreen(Screen):
             prog.update(progress=4)
 
             await self._typewrite(log, "")
-            # Labels for multi-endpoint services
             _url_labels = {
                 1: "Admin panel",
             }
             if host_result.healthy:
                 for i, url in enumerate(host_result.urls):
                     label = _url_labels.get(i, "Workspace" if i == 0 else "")
-                    prefix = f"✓ DEPLOYED" if i == 0 else "  "
+                    prefix = "✓ DEPLOYED" if i == 0 else "  "
                     suffix = f" ({label})" if label else ""
                     await self._typewrite(log, f"  [bold green]  {prefix} AT {url}{suffix}[/bold green]")
                 await self._typewrite(log, "  [dim green]target is live[/dim green]")
             elif host_result.urls:
                 for i, url in enumerate(host_result.urls):
                     label = _url_labels.get(i, "Workspace" if i == 0 else "")
-                    prefix = f"? RUNNING" if i == 0 else "  "
+                    prefix = "? RUNNING" if i == 0 else "  "
                     suffix = f" ({label})" if label else ""
                     await self._typewrite(log, f"  [bold yellow]  {prefix} AT {url}{suffix}[/bold yellow]")
                 await self._typewrite(log, "  [dim yellow]service started but not yet responding — check back later.[/dim yellow]")
@@ -350,7 +295,7 @@ class HostingScreen(Screen):
 
             self._host_result = host_result
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             await self._typewrite(log, "")
             await self._typewrite(log, "  [bold red]  ✗ DEPLOYMENT FAILED[/bold red]")
             await self._typewrite(log, f"  [red]  {e}[/red]")
