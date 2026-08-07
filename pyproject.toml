@@ -22,3 +22,6 @@ include = ["demo_ghostprovider*"]
 
 [tool.setuptools.package-data]
 demo_ghostprovider = ["py.typed", "theme.tcss"]
+
+[tool.ruff]
+target-version = "py310"

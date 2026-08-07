@@ -2,8 +2,8 @@
 
 import fcntl
 import json
-import os
 import logging
+import os
 from pathlib import Path
 
 logger = logging.getLogger("demo_ghostprovider.state")
@@ -104,7 +104,10 @@ def find_by_repo_url(repo_url: str) -> str | None:
     for key, entry in state.items():
         if key == "version":
             continue
-        if isinstance(entry, dict) and entry.get("repo_url") == repo_url:
-            if os.path.isdir(entry.get("clone_path", "")):
-                return entry["clone_path"]
+        if (
+            isinstance(entry, dict)
+            and entry.get("repo_url") == repo_url
+            and os.path.isdir(entry.get("clone_path", ""))
+        ):
+            return entry["clone_path"]
     return None

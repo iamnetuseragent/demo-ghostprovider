@@ -23,7 +23,7 @@ def fingerprint_port(port: int, proto: str = "tcp") -> ServiceFingerprint | None
             sock.settimeout(5)
             sock.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
             response = sock.recv(8192)
-    except (OSError, socket.timeout):
+    except (TimeoutError, OSError):
         return None
 
     headers_end = response.find(b"\r\n\r\n")
@@ -142,6 +142,7 @@ def _check_systemd_nspawn() -> bool:
         r = subprocess.run(
             ["systemd-nspawn", "--version"],
             capture_output=True, timeout=5,
+            check=False,
         )
         return r.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -153,6 +154,7 @@ def _check_network() -> bool:
         subprocess.run(
             ["ping", "-c", "1", "-W", "2", "8.8.8.8"],
             capture_output=True, timeout=5,
+            check=False,
         )
         return True
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -165,6 +167,7 @@ def _detect_interfaces() -> list[InterfaceInfo]:
         result = subprocess.run(
             ["ip", "-br", "addr", "show"],
             capture_output=True, text=True, timeout=5,
+            check=False,
         )
         if result.returncode == 0:
             for line in result.stdout.strip().split("\n"):
@@ -177,7 +180,8 @@ def _detect_interfaces() -> list[InterfaceInfo]:
                     netmask = f"/{ip_info.split('/')[1]}" if "/" in ip_info else ""
                     interfaces.append(InterfaceInfo(
                         name=name, ip=ip, netmask=netmask, status=status,
-                    ))
+                    )
+                    )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     return interfaces
@@ -189,6 +193,7 @@ def _detect_listening_ports() -> list[ListeningPort]:
         result = subprocess.run(
             ["ss", "-tlnp4"],
             capture_output=True, text=True, timeout=5,
+            check=False,
         )
         if result.returncode == 0:
             for line in result.stdout.strip().split("\n")[1:]:
@@ -210,7 +215,8 @@ def _detect_listening_ports() -> list[ListeningPort]:
                             ports.append(ListeningPort(
                                 port=port, proto=proto,
                                 address=addr, process=process,
-                            ))
+                            )
+                            )
                         except ValueError:
                             pass
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -233,6 +239,7 @@ def _get_gateway() -> str:
         result = subprocess.run(
             ["ip", "route", "show", "default"],
             capture_output=True, text=True, timeout=5,
+            check=False,
         )
         if result.returncode == 0 and result.stdout.strip():
             parts = result.stdout.strip().split()

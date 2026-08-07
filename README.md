@@ -1,12 +1,12 @@
 <h1 align="center">Automated self-hosting platform</h1>
 
-> <p align="center">GhostProvider is an open-source platform that simplifies self-hosting by automating deployment, service management, discovery, and clean removal.</p>
+> <p align="center">demo-ghostprovider is a restricted demo build of GhostProvider that automates deployment and management of exactly three services as systemd user units.</p>
 
 ![GHOST PROVIDER Panel](assets/GHOSTPROVIDER%20PANEL.JPEG)
 
 ## One-Click Deploy
 
-Paste a GitHub URL — get a host score — deploy as a systemd service.
+Paste a GitHub URL — deploy one of the three supported services as a systemd service.
 Private, local, no third parties.
 
 ![Demo GhostProvider](assets/demo-ghostprovider.webp)
@@ -47,14 +47,14 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
 
 ## System Scan
 
-Scans your machine for prerequisites, detects all listening ports, fingerprints known services (VERT, SearXNG, Memos...) and maps your network — gateway, DNS.
+Scans your machine for prerequisites, detects all listening ports, fingerprints known services (VERT, SearXNG, Memos) and maps your network — gateway, DNS.
 
 ### Why System Scan?
 
-Before deploying a new service, GhostProvider checks what's already running on your machine:
+Before deploying a new service, demo-ghostprovider checks what's already running on your machine:
 - **Prerequisites** — do you have Python, systemd, git installed?
 - **Listening ports** — which ports are already in use?
-- **Known services** — is SearXNG, Memos, or another app already running?
+- **Known services** — is SearXNG, Memos, or VERT already running?
 
 This avoids port conflicts and helps GhostProvider choose the right deployment strategy. All data stays on your machine — nothing is sent anywhere.
 

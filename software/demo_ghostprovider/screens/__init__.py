@@ -10,12 +10,12 @@ from demo_ghostprovider.screens.widgets import MatrixRain
 
 __all__ = [
     "AnalysisScreen",
-    "HostingScreen",
-    "RepoResultScreen",
-    "GithubScreen",
-    "WorkDirPromptScreen",
-    "MainScreen",
     "ConfirmModal",
-    "ServiceListScreen",
+    "GithubScreen",
+    "HostingScreen",
+    "MainScreen",
     "MatrixRain",
+    "RepoResultScreen",
+    "ServiceListScreen",
+    "WorkDirPromptScreen",
 ]

@@ -103,6 +103,7 @@ WantedBy=default.target
         subprocess.run(
             ["systemctl", "--user", "daemon-reload"],
             capture_output=True, text=True, timeout=10,
+            check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
@@ -111,6 +112,7 @@ WantedBy=default.target
         subprocess.run(
             ["systemctl", "--user", "enable", service_name],
             capture_output=True, text=True, timeout=10,
+            check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
@@ -123,6 +125,7 @@ def _check_service_started(service_name: str, delay: float = 5.0) -> bool:
         r = subprocess.run(
             ["systemctl", "--user", "is-active", service_name],
             capture_output=True, text=True, timeout=5,
+            check=False,
         )
         return r.stdout.strip() == "active"
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -135,6 +138,7 @@ def _get_service_logs(service_name: str, lines: int = 50) -> str:
         r = subprocess.run(
             ["journalctl", "--user", "-u", service_name, "-n", str(lines), "--no-pager"],
             capture_output=True, text=True, timeout=10,
+            check=False,
         )
         if r.returncode == 0:
             return r.stdout.strip()
@@ -151,12 +155,14 @@ def _discover_service_urls(service_name: str) -> list[str]:
         r = subprocess.run(
             ["systemctl", "--user", "show", service_name, "--property=MainPID", "--value"],
             capture_output=True, text=True, timeout=5,
+            check=False,
         )
         if r.returncode == 0 and r.stdout.strip() != "0":
             pid = r.stdout.strip()
             r2 = subprocess.run(
                 ["ss", "-tlnp", f"pid={pid}"],
                 capture_output=True, text=True, timeout=5,
+                check=False,
             )
             if r2.returncode == 0:
                 for line in r2.stdout.strip().split("\n")[1:]:
@@ -181,10 +187,12 @@ def _cleanup_strategy(result) -> None:
                 subprocess.run(
                     ["systemctl", "--user", "stop", service_name],
                     capture_output=True, text=True, timeout=10,
+                    check=False,
                 )
                 subprocess.run(
                     ["systemctl", "--user", "disable", service_name],
                     capture_output=True, text=True, timeout=10,
+                    check=False,
                 )
                 unit_file = os.path.expanduser(f"~/.config/systemd/user/{service_name}.service")
                 if os.path.isfile(unit_file):
@@ -196,6 +204,7 @@ def _cleanup_strategy(result) -> None:
             subprocess.run(
                 ["systemctl", "--user", "daemon-reload"],
                 capture_output=True, text=True, timeout=10,
+                check=False,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass

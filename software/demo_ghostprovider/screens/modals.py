@@ -42,7 +42,8 @@ class ConfirmModal(Screen):
                 Button("  YES  ", id="modal-yes", variant="primary"),
                 Button("  NO   ", id="modal-no", variant="default"),
                 id="modal-buttons",
-            ),
+            )
+            ,
         )
         yield Center(
             Static(
@@ -51,7 +52,8 @@ class ConfirmModal(Screen):
                 "[dim red]Enter[/dim red] [dim]select  |  [/dim]"
                 "[dim red]Esc[/dim red] [dim]cancel[/dim]",
                 id="modal-hint",
-            ),
+            )
+            ,
         )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

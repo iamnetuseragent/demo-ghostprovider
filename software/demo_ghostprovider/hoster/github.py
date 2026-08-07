@@ -47,17 +47,3 @@ def fetch_repo_metadata(owner: str, name: str) -> tuple[dict[str, Any] | None, s
         return (None, "Network error: request timed out")
     except requests.RequestException as e:
         return (None, f"Network error: {e}")
-
-
-def _check_root_files_via_api(owner: str, name: str) -> set[str] | None:
-    """Fetch root directory listing via GitHub Contents API (no clone needed)."""
-    try:
-        r = _http_get_with_curl_fallback(
-            f"https://api.github.com/repos/{owner}/{name}/contents/",
-            headers={"Accept": "application/vnd.github.v3+json"},
-        )
-        if r is None or r.status_code != 200:
-            return None
-        return {item["name"] for item in r.json() if isinstance(item, dict)}
-    except (requests.RequestException, ValueError, TypeError):
-        return None

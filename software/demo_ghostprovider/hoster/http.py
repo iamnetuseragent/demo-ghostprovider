@@ -16,7 +16,7 @@ def _is_allowed_url(url: str) -> bool:
         from urllib.parse import urlparse
         parsed = urlparse(url)
         return parsed.hostname in allowed_hosts
-    except Exception:
+    except (TypeError, ValueError):
         return False
 
 
@@ -60,7 +60,7 @@ def _http_get_with_curl_fallback(url: str, timeout: int = 10,
         for k, v in headers.items():
             cmd += ["-H", f"{k}: {v}"]
         cmd.append(url)
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5, check=False)
         if proc.returncode == 0 and proc.stdout.strip():
             resp = requests.Response()
             resp.status_code = 200

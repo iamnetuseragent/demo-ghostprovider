@@ -7,7 +7,7 @@ import socket
 import subprocess
 import time
 
-from demo_ghostprovider.services.units import _extract_working_dir, _read_unit_file
+from demo_ghostprovider.services.units import _extract_working_dir
 
 
 def _exec_systemd_action(action: str, unit_name: str) -> str:
@@ -19,6 +19,7 @@ def _exec_systemd_action(action: str, unit_name: str) -> str:
         result = subprocess.run(
             ["systemctl", "--user", action, unit_name],
             capture_output=True, text=True, timeout=30,
+            check=False,
         )
         if result.returncode == 0:
             return f"Service '{unit_name}' {action}ed successfully"
@@ -49,12 +50,14 @@ def _get_service_ports(name: str) -> list[int]:
         r = subprocess.run(
             ["systemctl", "--user", "show", name, "--property=ExecMainPID", "--value"],
             capture_output=True, text=True, timeout=5,
+            check=False,
         )
         if r.returncode == 0 and r.stdout.strip() != "0":
             pid = r.stdout.strip()
             r2 = subprocess.run(
                 ["ss", "-tlnp", f"pid={pid}"],
                 capture_output=True, text=True, timeout=5,
+                check=False,
             )
             if r2.returncode == 0:
                 for line in r2.stdout.strip().split("\n")[1:]:
@@ -79,7 +82,7 @@ def _verify_ports_freed(ports: list[int]) -> str:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 if s.connect_ex(("127.0.0.1", port)) == 0:
                     still_used.append(port)
-        except (socket.error, OSError):
+        except OSError:
             pass
     if still_used:
         return f" (warning: ports {still_used} still in use)"
@@ -89,7 +92,8 @@ def _verify_ports_freed(ports: list[int]) -> str:
 def remove_service(name: str) -> str:
     """Remove a demo_ghostprovider service: stop, disable, delete unit file, clean up all artifacts."""
     from demo_ghostprovider.hoster.systemd import _validate_unit_name
-    from demo_ghostprovider.state import unregister as _unregister_state, get_clone_path
+    from demo_ghostprovider.state import get_clone_path
+    from demo_ghostprovider.state import unregister as _unregister_state
 
     if not _validate_unit_name(name):
         return "remove failed: invalid service name"
@@ -106,6 +110,7 @@ def remove_service(name: str) -> str:
         r = subprocess.run(
             ["systemctl", "--user", "disable", name],
             capture_output=True, text=True, timeout=10,
+            check=False,
         )
         if r.returncode == 0:
             cleanup_log.append("disabled")
@@ -117,6 +122,7 @@ def remove_service(name: str) -> str:
         subprocess.run(
             ["systemctl", "--user", "reset-failed", name],
             capture_output=True, text=True, timeout=10,
+            check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
@@ -128,11 +134,8 @@ def remove_service(name: str) -> str:
         unit_file = f"/etc/systemd/system/{name}.service"
 
     working_dir = None
-    exec_start = ""
     if os.path.isfile(unit_file):
         working_dir = _extract_working_dir(unit_file)
-        props = _read_unit_file(unit_file)
-        exec_start = props.get("ExecStart", "")
 
         # Delete the unit file
         try:
@@ -146,6 +149,7 @@ def remove_service(name: str) -> str:
         subprocess.run(
             ["systemctl", "--user", "daemon-reload"],
             capture_output=True, text=True, timeout=10,
+            check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
@@ -161,7 +165,7 @@ def remove_service(name: str) -> str:
         try:
             shutil.rmtree(clone_path, ignore_errors=True)
             cleanup_log.append(f"directory removed: {clone_path}")
-        except Exception:
+        except Exception:  # noqa: BLE001
             cleanup_log.append(f"failed to remove: {clone_path}")
 
     # 7. Unregister from state
@@ -175,6 +179,7 @@ def remove_service(name: str) -> str:
                 subprocess.run(
                     ["fuser", "-k", f"{port}/tcp"],
                     capture_output=True, timeout=5,
+                    check=False,
                 )
             except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
                 pass
@@ -199,6 +204,7 @@ def wait_service_ready(name: str, timeout: int = 60) -> bool:
             result = subprocess.run(
                 ["systemctl", "--user", "is-active", name],
                 capture_output=True, text=True, timeout=5,
+                check=False,
             )
             status = result.stdout.strip()
 

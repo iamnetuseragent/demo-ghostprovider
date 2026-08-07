@@ -1,11 +1,14 @@
 """GhostProvider — cyberpunk 2077 themed TUI application."""
 
 from pathlib import Path
+from typing import ClassVar
+
 from textual.app import App, Binding
+from textual.screen import Screen
 
 from demo_ghostprovider.screens import (
-    MainScreen, AnalysisScreen, GithubScreen,
-    ServiceListScreen,
+    GithubScreen,
+    MainScreen,
     MatrixRain,
 )
 
@@ -15,12 +18,12 @@ class GhostProviderApp(App):
     TITLE = "demo_ghostprovider"
     SUB_TITLE = "⎈"
 
-    SCREENS = {
+    SCREENS: ClassVar[dict[str, type[Screen]]] = {
         "main": MainScreen,
         "github": GithubScreen,
     }
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "quit", "Quit"),
         Binding("c", "copy_visible", "Copy all text", show=False),
         Binding("ctrl+shift+c", "copy_visible", "Copy selected text", show=False),
@@ -47,7 +50,7 @@ class GhostProviderApp(App):
             proc.communicate(text.encode("utf-8"), timeout=1)
         except FileNotFoundError:
             pass
-        except Exception:
+        except (subprocess.TimeoutExpired, OSError):
             pass
 
     def on_mount(self) -> None:
