@@ -87,7 +87,7 @@ curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/m
 ```bash
 git clone https://github.com/iamnetuseragent/demo-ghostprovider.git
 cd demo-ghostprovider
-makepkg -si -p installation/PKGBUILD
+makepkg -si
 ```
 
 ## Usage
