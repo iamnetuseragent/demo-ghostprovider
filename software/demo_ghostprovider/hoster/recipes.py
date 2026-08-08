@@ -44,7 +44,7 @@ DEMO_SERVICES: tuple[DemoRecipe, ...] = (
         description="SearXNG — privacy-friendly metasearch engine (Python)",
         build_steps=(
             "python3 -m venv .venv",
-            ".venv/bin/pip install -e .",
+            ".venv/bin/pip install --no-cache-dir -e .",
         )
         ,
         start_cmd="{venv} -m searx.webapp",
