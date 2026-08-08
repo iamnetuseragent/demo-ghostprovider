@@ -64,7 +64,6 @@ def _create_systemd_service(service_name: str, working_dir: str,
     # ProtectSystem=strict makes /etc read-only, breaking DNS resolution for services
     # that read /etc/resolv.conf. ProtectSystem=full only protects /usr and /boot.
     protect_system = "full"
-    user_home = os.path.expanduser("~")
 
     unit_content = f"""[Unit]
 Description={safe_desc}
@@ -81,7 +80,8 @@ RestartSec=5
 NoNewPrivileges=yes
 ProtectHome=read-only
 ProtectSystem={protect_system}
-ReadWritePaths={safe_working} {user_home}/.cache
+ReadWritePaths={safe_working}
+Environment="XDG_CACHE_HOME={safe_working}/.ghost-cache"
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

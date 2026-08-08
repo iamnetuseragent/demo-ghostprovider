@@ -43,7 +43,7 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
   - `NoNewPrivileges=yes` — prevents privilege escalation
   - `ProtectHome=read-only` — no write access to home directory
   - `ProtectSystem=full` — /usr, /boot, and /etc are read-only
-  - `ReadWritePaths` — restricted to the deployed project directory and ~/.cache
+  - `ReadWritePaths` — restricted to the deployed project directory; caches stay inside it (`XDG_CACHE_HOME`, npm/go/cargo/pnpm cache dirs are redirected to `~project/.ghost-cache` and removed after each build)
 
 ### Threat model (please read)
 
@@ -57,7 +57,10 @@ a safety net against accidents, not a security boundary.
 Build steps run sandboxed by default inside a hardened `systemd-run --user`
 transient unit (`NoNewPrivileges=yes`, `ProtectSystem=strict`,
 `ProtectHome=read-only`, `PrivateTmp=yes`, `PrivateDevices=yes`, empty
-capability set; read-write only in the project directory and cache dirs). Set
+capability set; read-write only in the project directory, and all tool caches
+(pip, npm/yarn/bun, cargo, go, pnpm, TMPDIR) are redirected to
+`<project>/.ghost-cache` and removed when the build finishes, so nothing is
+written to your `~/.cache`, `~/.npm`, or `~/.cargo`). Set
 the environment variable `GHOSTPROVIDER_NO_SANDBOX=1` to opt out per
 invocation. When `systemd-run` is unavailable, execution falls back to direct
 execution with a warning. The sandbox still runs as the same user. For
