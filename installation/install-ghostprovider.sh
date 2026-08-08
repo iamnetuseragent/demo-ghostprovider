@@ -68,16 +68,32 @@ fi
 
 # ── 5. Clone private repository ──
 info "=> Downloading ghostprovider..."
-CLONE_URL=$(echo "$REPO" | sed "s|https://|https://x-access-token:${TOKEN}@|")
 TMP_DIR="${INSTALL_DIR}.tmp"
 rm -rf "$TMP_DIR"
 
-if ! git clone --quiet --depth=1 "$CLONE_URL" "$TMP_DIR"; then
+# The token is never embedded in the clone URL — an URL like
+# "https://x-access-token:${TOKEN}@github.com/..." would leak the token through
+# argv (/proc, ps) and shell history. Instead it is supplied on demand via a
+# temporary GIT_ASKPASS helper (mirrors how ghostprovider itself clones).
+export TOKEN
+ASKPASS="$(mktemp "${TMPDIR:-/tmp}/gp-askpass.XXXXXX")"
+cat > "$ASKPASS" << 'ASKPASS_EOF'
+#!/bin/sh
+case "$1" in
+  *[Uu]sername*) echo "x-access-token" ;;
+  *) echo "$TOKEN" ;;
+esac
+ASKPASS_EOF
+chmod 700 "$ASKPASS"
+trap 'rm -f "$ASKPASS"' EXIT
+
+if ! GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \
+     git clone --quiet --depth=1 "$REPO" "$TMP_DIR"; then
   rm -rf "$TMP_DIR"
   err "Failed to clone the repository. Your token may have expired — ask the bot for a new one with /access."
 fi
 
-# Never persist the token: drop the remote (and the URL it embeds) immediately.
+# Drop the remote so the install dir has no lingering origin URL.
 git -C "$TMP_DIR" remote remove origin
 
 # Runtime data (deployed services/binaries) lives in DATA_DIR, outside the

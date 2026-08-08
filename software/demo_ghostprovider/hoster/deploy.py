@@ -11,6 +11,7 @@ from demo_ghostprovider.hoster._helpers import _run_build_cmd, find_free_port
 from demo_ghostprovider.hoster.git import _git_clone
 from demo_ghostprovider.hoster.models import HostResult, RepoAnalysis
 from demo_ghostprovider.hoster.recipes import DemoRecipe
+from demo_ghostprovider.hoster.secrets import write_env_file
 from demo_ghostprovider.hoster.systemd import (
     _check_service_started,
     _cleanup_strategy,
@@ -110,12 +111,14 @@ def deploy_service(analysis: RepoAnalysis, recipe: DemoRecipe,
         exec_start = _resolve_start(recipe, project_dir, port)
         _emit(f"installing systemd unit {recipe.service_name}...")
         _stop_existing(recipe.service_name)
+        env_file = write_env_file(recipe.service_name, recipe.env) if recipe.env else None
         _create_systemd_service(
             service_name=recipe.service_name,
             working_dir=str(project_dir),
             exec_start=exec_start,
             description=f"demo: {recipe.description}",
             port=port,
+            env_file=env_file,
         )
 
         _emit("starting service...")
