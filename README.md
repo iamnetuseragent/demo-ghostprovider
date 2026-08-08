@@ -29,7 +29,7 @@ Private, local, no third parties.
 GhostProvider uses systemd user-level services because they provide:
 - **No root required** — every user can manage their own services
 - **Auto-start on login** — services survive reboots without manual config
-- **Clean removal** — `systemctl --user disable` + delete unit file = zero leftovers
+- **Clean removal** — `systemctl --user disable` + delete unit file; demo-ghostprovider also cleans the cloned repo, secrets file, and lingering ports
 - **Sandboxing** — built-in security directives (NoNewPrivileges, ProtectHome, ProtectSystem)
 
 This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux distributions.
@@ -42,8 +42,8 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
 - **Service sandboxing:**
   - `NoNewPrivileges=yes` — prevents privilege escalation
   - `ProtectHome=read-only` — no write access to home directory
-  - `ProtectSystem=read-only` — read-only filesystem except working directory
-  - `ReadWritePaths` — restricted to deployed project directory only
+  - `ProtectSystem=full` — /usr, /boot, and /etc are read-only
+  - `ReadWritePaths` — restricted to the deployed project directory and ~/.cache
 
 ### Threat model (please read)
 
@@ -78,7 +78,7 @@ This avoids port conflicts and helps GhostProvider choose the right deployment s
 
 ## Control panel
 
-Full dashboard for all deployed services. Start, stop, restart, or remove — one click cleans the service, unit file, cloned repo, and lingering ports. GhostProvider cleans up the resources it manages; applications may still leave their own state (databases, caches, external sockets) elsewhere.
+Full dashboard for all deployed services. Start, stop, restart, or remove — one click cleans the service, unit file, cloned repo, secrets file, and lingering ports. GhostProvider cleans up the resources it manages; applications may still leave their own state (databases, caches, external sockets) elsewhere.
 
 ## Service support
 
