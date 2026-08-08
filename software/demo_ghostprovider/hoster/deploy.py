@@ -17,6 +17,7 @@ from demo_ghostprovider.hoster.systemd import (
     _create_systemd_service,
     _get_service_logs,
 )
+from demo_ghostprovider.paths import SERVICES_DIR
 from demo_ghostprovider.state import register as _register_state
 
 
@@ -29,7 +30,7 @@ def _clone_repo(analysis: RepoAnalysis, work_dir: str | None = None) -> bool:
     if work_dir:
         base = os.path.abspath(os.path.expanduser(work_dir))
     else:
-        base = os.path.expanduser("~/.local/share/demo-ghostprovider/services")
+        base = str(SERVICES_DIR)
     os.makedirs(base, exist_ok=True)
 
     clone_dir = os.path.join(base, _safe_dirname(analysis.name))

@@ -13,6 +13,7 @@ set -euo pipefail
 
 REPO="https://github.com/iamnetuseragent/ghostprovider.git"
 INSTALL_DIR="${HOME}/.local/share/ghostprovider"
+DATA_DIR="${HOME}/.local/share/ghostprovider-data"
 BIN_DIR="${HOME}/.local/bin"
 BIN_NAME="ghostprovider"
 
@@ -78,6 +79,17 @@ fi
 
 # Never persist the token: drop the remote (and the URL it embeds) immediately.
 git -C "$TMP_DIR" remote remove origin
+
+# Runtime data (deployed services/binaries) lives in DATA_DIR, outside the
+# install dir. Migrate any legacy data out of the old location first so the
+# rm -rf below never touches it.
+mkdir -p "$DATA_DIR"
+for d in services bin; do
+  if [ -d "$INSTALL_DIR/$d" ] && [ ! -e "$DATA_DIR/$d" ]; then
+    info "=> Moving legacy $d/ to ${DATA_DIR}/..."
+    mv "$INSTALL_DIR/$d" "$DATA_DIR/"
+  fi
+done
 
 rm -rf "$INSTALL_DIR"
 mv "$TMP_DIR" "$INSTALL_DIR"
