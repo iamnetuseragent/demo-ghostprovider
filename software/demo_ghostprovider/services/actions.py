@@ -171,6 +171,10 @@ def remove_service(name: str) -> str:
     # 7. Unregister from state
     _unregister_state(name)
 
+    # 7b. Remove the per-service secrets EnvironmentFile
+    from demo_ghostprovider.hoster.secrets import remove_env_file
+    remove_env_file(name)
+
     # 8. Kill any lingering processes on the freed ports
     ports = _get_service_ports(name)
     if ports:

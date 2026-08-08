@@ -11,6 +11,8 @@ build/
 *~
 pkg/
 src/
+build/
+dist/
 *.tar.zst
 *.save
 *.save.*

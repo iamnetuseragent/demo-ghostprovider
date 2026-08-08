@@ -197,6 +197,8 @@ def _cleanup_strategy(result) -> None:
                 unit_file = os.path.expanduser(f"~/.config/systemd/user/{service_name}.service")
                 if os.path.isfile(unit_file):
                     os.remove(unit_file)
+                from demo_ghostprovider.hoster.secrets import remove_env_file
+                remove_env_file(service_name)
             except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
                 pass
 

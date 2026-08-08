@@ -4,7 +4,7 @@ demo_ghostprovider does not host arbitrary repositories. Each entry below
 is a hardcoded deploy recipe for one specific public service.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from demo_ghostprovider.hoster.github import fetch_repo_metadata, parse_github_url
 from demo_ghostprovider.hoster.models import RepoAnalysis
@@ -22,6 +22,7 @@ class DemoRecipe:
     build_steps: tuple[str, ...] = ()
     start_cmd: str = ""
     port: int = 0
+    env: dict[str, str] = field(default_factory=dict)
 
 
 DEMO_SERVICES: tuple[DemoRecipe, ...] = (

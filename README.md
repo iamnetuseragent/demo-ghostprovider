@@ -45,6 +45,24 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
   - `ProtectSystem=read-only` — read-only filesystem except working directory
   - `ReadWritePaths` — restricted to deployed project directory only
 
+### Threat model (please read)
+
+The systemd sandbox above protects the **running service**, not what happens
+*before* it starts. Deploying one of the three supported services builds it
+from source on your machine, and those build steps (`pip install`, `npm
+install`, `cargo build`, `go build`) execute scripts shipped in the
+repository **with your user's permissions**. The dangerous-command blocklist is
+a safety net against accidents, not a security boundary.
+
+Build steps run sandboxed by default inside a hardened `systemd-run --user`
+transient unit (`NoNewPrivileges=yes`, `ProtectSystem=strict`,
+`ProtectHome=read-only`, `PrivateTmp=yes`, `PrivateDevices=yes`, empty
+capability set; read-write only in the project directory and cache dirs). Set
+the environment variable `GHOSTPROVIDER_NO_SANDBOX=1` to opt out per
+invocation. When `systemd-run` is unavailable, execution falls back to direct
+execution with a warning. The sandbox still runs as the same user. For
+anything untrusted, run this tool in a dedicated user, VM, or container.
+
 ## System Scan
 
 Scans your machine for prerequisites, detects all listening ports, fingerprints known services (VERT, SearXNG, Memos) and maps your network — gateway, DNS.
@@ -60,7 +78,7 @@ This avoids port conflicts and helps GhostProvider choose the right deployment s
 
 ## Control panel
 
-Full dashboard for all deployed services. Start, stop, restart, or remove — one click cleans the service, unit file, cloned repo, and lingering ports. Zero leftovers.
+Full dashboard for all deployed services. Start, stop, restart, or remove — one click cleans the service, unit file, cloned repo, and lingering ports. GhostProvider cleans up the resources it manages; applications may still leave their own state (databases, caches, external sockets) elsewhere.
 
 ## Service support
 
