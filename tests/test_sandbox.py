@@ -1,10 +1,12 @@
 """Tests for the build sandbox helpers."""
 
+import os
 import shutil
 
 import pytest
 from demo_ghostprovider.hoster._helpers import (
     _cache_env,
+    _rmtree,
     _run_sandboxed,
     _sandbox_enabled,
     _strip_systemd_status,
@@ -86,8 +88,41 @@ def test_cache_redirect_applied_in_run(monkeypatch, tmp_path):
     assert str(proj / ".ghost-cache" / "go") in result.stdout
 
 
-def test_ghost_cache_removed_after_run(monkeypatch, tmp_path):
-    """The .ghost-cache directory never survives a run."""
+def test_cache_dirs_precreated_before_run(monkeypatch, tmp_path):
+    """Cache dirs (e.g. GOTMPDIR) exist before the command runs, so tools
+    like `go build` that require a pre-existing tmp dir do not fail."""
+    proj = tmp_path / "app"
+    proj.mkdir()
+    monkeypatch.setenv("GHOSTPROVIDER_NO_SANDBOX", "1")
+    result = _run_sandboxed(
+        ["/bin/sh", "-c", "test -d \"$GOTMPDIR\" && test -d \"$GOCACHE\" && echo dirs-ok"],
+        cwd=str(proj),
+    )
+    assert result.returncode == 0
+    assert "dirs-ok" in result.stdout
+
+
+def test_rmtree_removes_readonly_files(tmp_path):
+    """_rmtree removes trees containing read-only files/dirs (Go module
+    cache writes 0444 files / 0555 dirs), which plain shutil.rmtree leaves
+    behind."""
+    tree = tmp_path / "cache"
+    sub = tree / "go-mod" / "pkg"
+    sub.mkdir(parents=True)
+    ro_file = sub / "module.zip"
+    ro_file.write_text("data")
+    os.chmod(ro_file, 0o444)
+    os.chmod(sub, 0o555)
+    os.chmod(tree / "go-mod", 0o555)
+
+    _rmtree(str(tree))
+
+    assert not tree.exists()
+
+
+def test_ghost_cache_persists_after_run(monkeypatch, tmp_path):
+    """The .ghost-cache directory survives a run so repeat deployments reuse
+    downloaded tool artifacts (Go modules, npm/pip caches)."""
     proj = tmp_path / "app"
     proj.mkdir()
     cache_dir = proj / ".ghost-cache"
@@ -95,7 +130,7 @@ def test_ghost_cache_removed_after_run(monkeypatch, tmp_path):
     monkeypatch.setenv("GHOSTPROVIDER_NO_SANDBOX", "1")
     result = _run_sandboxed(["/bin/sh", "-c", "true"], cwd=str(proj))
     assert result.returncode == 0
-    assert not cache_dir.exists()
+    assert cache_dir.is_dir()
 
 
 def test_sandbox_cmd_redirects_caches(monkeypatch, tmp_path):

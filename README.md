@@ -43,7 +43,7 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
   - `NoNewPrivileges=yes` — prevents privilege escalation
   - `ProtectHome=read-only` — no write access to home directory
   - `ProtectSystem=full` — /usr, /boot, and /etc are read-only
-  - `ReadWritePaths` — restricted to the deployed project directory; caches stay inside it (`XDG_CACHE_HOME`, npm/go/cargo/pnpm cache dirs are redirected to `~project/.ghost-cache` and removed after each build)
+  - `ReadWritePaths` — restricted to the deployed project directory; caches stay inside it (`XDG_CACHE_HOME`, npm/go/cargo/pnpm cache dirs are redirected to `~project/.ghost-cache`, persist between deployments so repeated builds reuse downloaded artifacts, and are removed together with the clone when the service is deleted)
 
 ### Threat model (please read)
 
@@ -56,10 +56,12 @@ a safety net against accidents, not a security boundary.
 
 Build steps run sandboxed by default inside a hardened `systemd-run --user`
 transient unit (`NoNewPrivileges=yes`, `ProtectSystem=strict`,
-`ProtectHome=read-only`, `PrivateTmp=yes`, `PrivateDevices=yes`, empty
+`ProtectHome=read-only`, `PrivateDevices=yes`, empty
 capability set; read-write only in the project directory, and all tool caches
 (pip, npm/yarn/bun, cargo, go, pnpm, TMPDIR) are redirected to
-`<project>/.ghost-cache` and removed when the build finishes, so nothing is
+`<project>/.ghost-cache` — they persist between builds so repeat deployments
+reuse downloaded artifacts, and are removed together with the clone when the
+service is deleted, so nothing is
 written to your `~/.cache`, `~/.npm`, or `~/.cargo`). Set
 the environment variable `GHOSTPROVIDER_NO_SANDBOX=1` to opt out per
 invocation. When `systemd-run` is unavailable, execution falls back to direct

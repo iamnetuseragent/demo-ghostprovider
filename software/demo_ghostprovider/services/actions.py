@@ -2,7 +2,6 @@
 
 import os
 import re
-import shutil
 import socket
 import subprocess
 import time
@@ -91,6 +90,7 @@ def _verify_ports_freed(ports: list[int]) -> str:
 
 def remove_service(name: str) -> str:
     """Remove a demo_ghostprovider service: stop, disable, delete unit file, clean up all artifacts."""
+    from demo_ghostprovider.hoster._helpers import _rmtree
     from demo_ghostprovider.hoster.systemd import _validate_unit_name
     from demo_ghostprovider.state import get_clone_path
     from demo_ghostprovider.state import unregister as _unregister_state
@@ -163,7 +163,7 @@ def remove_service(name: str) -> str:
 
     if clone_path and os.path.isdir(clone_path):
         try:
-            shutil.rmtree(clone_path, ignore_errors=True)
+            _rmtree(clone_path)
             cleanup_log.append(f"directory removed: {clone_path}")
         except Exception:  # noqa: BLE001
             cleanup_log.append(f"failed to remove: {clone_path}")

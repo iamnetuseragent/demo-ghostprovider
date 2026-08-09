@@ -2,12 +2,13 @@
 
 import os
 import re
-import shutil
+import secrets
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from demo_ghostprovider.hoster._helpers import _run_build_cmd, find_free_port
+from demo_ghostprovider.hoster._helpers import _rmtree, _run_build_cmd, find_free_port
 from demo_ghostprovider.hoster.git import _git_clone
 from demo_ghostprovider.hoster.models import HostResult, RepoAnalysis
 from demo_ghostprovider.hoster.recipes import DemoRecipe
@@ -37,7 +38,7 @@ def _clone_repo(analysis: RepoAnalysis, work_dir: str | None = None) -> bool:
     clone_dir = os.path.join(base, _safe_dirname(analysis.name))
     if not os.path.isdir(os.path.join(clone_dir, ".git")):
         if os.path.isdir(clone_dir):
-            shutil.rmtree(clone_dir, ignore_errors=True)
+            _rmtree(clone_dir)
         git_url = f"https://github.com/{analysis.owner}/{analysis.name}.git"
         if not _git_clone(git_url, clone_dir):
             return False
@@ -70,8 +71,38 @@ def _resolve_start(recipe: DemoRecipe, project_dir: Path, port: int) -> str:
         cmd = cmd.replace("{bin}", str(project_dir / "ghost-server"))
 
     cmd = cmd.replace("{venv}", str(project_dir / ".venv" / "bin" / "python"))
+    cmd = cmd.replace("{python}", sys.executable)
+    cmd = cmd.replace("{project}", str(project_dir))
     cmd = cmd.replace("{port}", str(port))
     return cmd
+
+
+def _prepare_searxng_config(project_dir: Path, port: int = 8888) -> None:
+    """Patch SearXNG settings.yml with a real secret_key, bind address, and port."""
+    settings_file = project_dir / "searx" / "settings.yml"
+    if not settings_file.exists():
+        return
+
+    secret_key = secrets.token_hex(32)
+
+    try:
+        content = settings_file.read_text()
+    except OSError:
+        return
+
+    content = content.replace('secret_key: "ultrasecretkey"', f'secret_key: "{secret_key}"')
+    content = re.sub(r'^(\s+)port:\s*\d+', rf'\g<1>port: {port}', content, flags=re.MULTILINE)
+    content = re.sub(
+        r'^(\s+)bind_address:\s*"[^"]*"',
+        r'\g<1>bind_address: "127.0.0.1"',
+        content,
+        flags=re.MULTILINE,
+    )
+
+    try:
+        settings_file.write_text(content)
+    except OSError:
+        pass
 
 
 def _stop_existing(service_name: str) -> None:
@@ -99,6 +130,14 @@ def deploy_service(analysis: RepoAnalysis, recipe: DemoRecipe,
     project_dir = Path(analysis.clone_path)
 
     try:
+        for step in recipe.pre_build:
+            _emit(f"pre-build: {step[:100]}")
+            r = _run_build_cmd(step, project_dir)
+            if r.returncode != 0:
+                raise RuntimeError(
+                    f"Pre-build step failed (exit {r.returncode}):\n{r.stderr[:300]}"
+                )
+
         for step in recipe.build_steps:
             _emit(f"build: {step[:100]}")
             r = _run_build_cmd(step, project_dir)
@@ -107,7 +146,9 @@ def deploy_service(analysis: RepoAnalysis, recipe: DemoRecipe,
                     f"Build step failed (exit {r.returncode}):\n{r.stderr[:300]}"
                 )
 
-        port = recipe.port or find_free_port()
+        port = find_free_port(recipe.port) if recipe.port else find_free_port()
+        if recipe.searxng:
+            _prepare_searxng_config(project_dir, port)
         exec_start = _resolve_start(recipe, project_dir, port)
         _emit(f"installing systemd unit {recipe.service_name}...")
         _stop_existing(recipe.service_name)
@@ -147,4 +188,4 @@ def deploy_service(analysis: RepoAnalysis, recipe: DemoRecipe,
 def cleanup(analysis: RepoAnalysis) -> None:
     """Remove the clone directory after an aborted deploy."""
     if analysis.clone_path and os.path.isdir(analysis.clone_path):
-        shutil.rmtree(analysis.clone_path, ignore_errors=True)
+        _rmtree(analysis.clone_path)

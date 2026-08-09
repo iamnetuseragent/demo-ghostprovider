@@ -116,10 +116,29 @@ def _get_unit_ports(unit_name: str) -> list[int]:
     return ports
 
 
+def _friendly_name(unit_name: str, repo_url: str) -> str:
+    """Human-readable name for a state-tracked unit.
+
+    Prefers the recipe display name (matched by service name first, then by
+    the state's ``repo_url``) and falls back to the raw unit name.
+    """
+    from demo_ghostprovider.hoster.recipes import DEMO_SERVICES
+
+    for recipe in DEMO_SERVICES:
+        if recipe.service_name == unit_name:
+            return recipe.display_name or recipe.name
+    if repo_url:
+        base = repo_url.rstrip("/").lower()
+        for recipe in DEMO_SERVICES:
+            if base.endswith(f"/{recipe.owner.lower()}/{recipe.name.lower()}"):
+                return recipe.display_name or recipe.name
+    return unit_name
+
+
 def list_services() -> list[ServiceInfo]:
     """List services that demo_ghostprovider can manage.
 
-    Shows only the ghost-* services tracked in this instance's own state
+    Shows only services tracked in this instance's own state
     (``~/.config/demo-ghostprovider/state.json``). Services deployed by the
     full ghostprovider (its own state file) are never shown here.
     """
@@ -130,12 +149,18 @@ def list_services() -> list[ServiceInfo]:
     state = _load_state()
     gp_services = {k for k in state if k != "version"}
 
-    try:
-        # List all user-level services (running or stopped)
-        cmd = ["systemctl", "--user", "list-units", "--type=service", "--plain", "--no-legend",
-               "--all"]
+    if not gp_services:
+        return services
 
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
+    # Only units that are actually loaded (running or stopped since a start)
+    # are shown — installed-but-never-loaded unit files from old experiments
+    # stay hidden. Tracked in state => owned by this demo instance.
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "list-units", "--type=service", "--plain", "--no-legend",
+             "--all"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
         if r.returncode != 0:
             return services
 
@@ -145,26 +170,21 @@ def list_services() -> list[ServiceInfo]:
                 continue
 
             unit_name = parts[0].replace(".service", "")
-
-            # Get ports first to decide if this is a web service
-            ports = _get_unit_ports(unit_name)
-
-            # Only show ghost-* services tracked in state (deployed by demo-ghostprovider)
-            is_ghost_managed = unit_name.startswith("ghost-") and unit_name in gp_services
-
-            if not is_ghost_managed:
+            if unit_name not in gp_services:
                 continue
 
-            status = parts[2] if len(parts) > 2 else "unknown"
-            state_val = parts[3] if len(parts) > 3 else "unknown"
+            status, state_val = parts[2], parts[3]
 
-            # Get description
-            desc = _get_unit_property(unit_name, "Description")
+            ports = _get_unit_ports(unit_name)
+            exec_start = _get_unit_property(f"{unit_name}.service", "ExecStart")
 
-            # Get exec start command
-            exec_start = _get_unit_property(unit_name, "ExecStart")
+            repo_url = ""
+            entry = state.get(unit_name)
+            if isinstance(entry, dict):
+                repo_url = entry.get("repo_url", "")
 
-            # Build URLs from ports
+            description = _friendly_name(unit_name, repo_url)
+
             urls: list[str] = []
             for port in ports:
                 if port > 0:
@@ -175,12 +195,11 @@ def list_services() -> list[ServiceInfo]:
                 unit_name=unit_name,
                 status=status,
                 state=state_val,
-                description=desc,
+                description=description,
                 ports=ports,
                 exec_start=exec_start,
                 urls=urls,
-            )
-            )
+            ))
 
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
