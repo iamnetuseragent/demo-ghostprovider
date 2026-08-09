@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import uuid
 from collections.abc import Callable
@@ -42,8 +43,10 @@ def _validate_build_cmd(cmd: str) -> None:
 # Build/install steps run inside a systemd-run --user transient unit with
 # hardening properties (filesystem read-only outside the project, no new
 # privileges, no devices, empty capability set). Tool caches are redirected
-# under <project>/.ghost-cache and wiped after each run, so builds never
-# write to the user's shared caches. This limits damage from malicious or
+# under <project>/.ghost-cache and persist inside the project between
+# deployments, so builds never write to the user's shared caches and repeated
+# builds reuse downloaded artifacts. The cache is removed together with the
+# clone when the service is deleted. This limits damage from malicious or
 # broken build scripts but runs as the same user, so it is NOT a trust
 # boundary — only a blast-radius reducer. See README threat model.
 
@@ -59,7 +62,9 @@ def _sandbox_enabled() -> bool:
 
 _SANDBOX_PROPERTIES: tuple[str, ...] = (
     "NoNewPrivileges=yes",
-    "PrivateTmp=yes",
+    # No PrivateTmp: it shadows the real /tmp, so a build whose working
+    # directory lives under /tmp fails with CHDIR/NAMESPACE. Tool temp files
+    # are already redirected away from /tmp via $TMPDIR below.
     "ProtectSystem=strict",
     "ProtectHome=read-only",
     "PrivateDevices=yes",
@@ -79,9 +84,10 @@ def _cache_env(project_dir: str | None) -> dict[str, str]:
 
     Builds never write to the user's shared caches (~/.cache, ~/.npm,
     ~/.cargo, ...); instead each cache var points inside the project. The
-    directory is wiped after every sandboxed command (see _run_sandboxed),
-    so nothing survives a build. Returns an empty dict when no project
-    directory is known.
+    directory persists inside the project so repeated deployments reuse
+    downloaded artifacts (e.g. Go modules) instead of re-downloading them;
+    it is removed together with the clone when the service is deleted.
+    Returns an empty dict when no project directory is known.
     """
     if not project_dir:
         return {}
@@ -100,6 +106,44 @@ def _cache_env(project_dir: str | None) -> dict[str, str]:
         "PNPM_HOME": os.path.join(base, "pnpm-home"),
         "TMPDIR": os.path.join(base, "tmp"),
     }
+
+
+def _rmtree(path: str) -> None:
+    """Remove a directory tree, tolerating read-only files/dirs.
+
+    Tool caches under ``.ghost-cache`` (notably the Go module cache) write
+    files and directories with read-only bits, so a plain ``shutil.rmtree``
+    silently leaves them behind. Chmod every file and directory writable
+    before removing, so the tree is deleted regardless of mode bits.
+    """
+    if not os.path.isdir(path):
+        if os.path.lexists(path):
+            os.chmod(path, stat.S_IRWXU)
+            os.unlink(path)
+        return
+
+    for dirpath, dirnames, filenames in os.walk(path, topdown=False):
+        for name in filenames:
+            p = os.path.join(dirpath, name)
+            try:
+                os.chmod(p, stat.S_IRWXU)
+            except OSError:
+                pass
+        try:
+            os.chmod(dirpath, stat.S_IRWXU)
+        except OSError:
+            pass
+
+    shutil.rmtree(path, onerror=_rmtree_onerror)
+
+
+def _rmtree_onerror(func: Callable[[str], object], p: str, exc_info: object) -> None:
+    """Last-resort handler for rmtree failures: chmod and retry once."""
+    try:
+        os.chmod(p, stat.S_IRWXU)
+        func(p)
+    except OSError:
+        pass
 
 
 def _strip_systemd_status(err: str) -> str:
@@ -130,60 +174,68 @@ def _run_sandboxed(cmd: list[str], cwd: str | None = None,
     devices, privileges), not user-level trust.
     """
     # Cache redirection always applies (sandboxed or not); it overrides any
-    # caller-provided cache vars and the .ghost-cache dir is wiped afterwards.
+    # caller-provided cache vars. The .ghost-cache dir persists inside the
+    # project so repeat builds reuse downloaded tool artifacts.
     cache_env = _cache_env(cwd)
     run_env = env if env is not None else os.environ.copy()
     run_env.update(cache_env)
 
-    try:
-        if not _sandbox_enabled() or shutil.which("systemd-run") is None:
-            return _run_plain(cmd, cwd=cwd, env=run_env, timeout=timeout)
-
-        unit = f"ghost-build-{uuid.uuid4().hex[:8]}.service"
-        args = ["systemd-run", "--user", "--wait", "--pipe", "--collect", "--unit", unit]
-        if cwd:
-            args.append(f"--working-directory={cwd}")
-        else:
-            args.append("--same-dir")
-
-        rw = list(readwrite) if readwrite else []
-        for prop in _SANDBOX_PROPERTIES:
-            args.append(f"--property={prop}")
-        for path in rw:
-            args.append(f"--property=ReadWritePaths={path}")
-
-        for key, value in run_env.items():
-            args.append(f"--setenv={key}={value}")
-        args.append("--")
-        args.extend(cmd)
-
+    # Some tools require their cache/tmp dirs to exist up front (e.g. go build
+    # fails when GOTMPDIR is missing). Pre-create the base and every redirected
+    # cache dir.
+    if cache_env:
         try:
-            proc = subprocess.run(
-                args, capture_output=True, text=True,
-                timeout=timeout, env=run_env, check=False,
-            )
-        except subprocess.TimeoutExpired:
-            subprocess.run(
-                ["systemctl", "--user", "kill", unit],
-                capture_output=True, timeout=10, check=False,
-            )
-            raise
-        except (FileNotFoundError, OSError):
-            return _run_plain(cmd, cwd=cwd, env=run_env, timeout=timeout)
+            os.makedirs(os.path.join(str(cwd), ".ghost-cache"), exist_ok=True)
+            for _path in set(cache_env.values()):
+                os.makedirs(_path, exist_ok=True)
+        except OSError:
+            logger.warning("could not pre-create .ghost-cache dirs under %s", cwd)
 
-        if proc.returncode != 0 and "running as unit" not in proc.stderr.lower():
-            # The unit never started (no user manager / DBus) — run directly.
-            logger.warning(
-                "systemd-run sandbox unavailable (%s); falling back to direct execution",
-                proc.stderr.strip().splitlines()[0] if proc.stderr.strip() else proc.returncode,
-            )
-            return _run_plain(cmd, cwd=cwd, env=run_env, timeout=timeout)
+    if not _sandbox_enabled() or shutil.which("systemd-run") is None:
+        return _run_plain(cmd, cwd=cwd, env=run_env, timeout=timeout)
 
-        proc.stderr = _strip_systemd_status(proc.stderr)
-        return proc
-    finally:
-        if cache_env:
-            shutil.rmtree(os.path.join(str(cwd), ".ghost-cache"), ignore_errors=True)
+    unit = f"ghost-build-{uuid.uuid4().hex[:8]}.service"
+    args = ["systemd-run", "--user", "--wait", "--pipe", "--collect", "--unit", unit]
+    if cwd:
+        args.append(f"--working-directory={cwd}")
+    else:
+        args.append("--same-dir")
+
+    rw = list(readwrite) if readwrite else []
+    for prop in _SANDBOX_PROPERTIES:
+        args.append(f"--property={prop}")
+    for path in rw:
+        args.append(f"--property=ReadWritePaths={path}")
+
+    for key, value in run_env.items():
+        args.append(f"--setenv={key}={value}")
+    args.append("--")
+    args.extend(cmd)
+
+    try:
+        proc = subprocess.run(
+            args, capture_output=True, text=True,
+            timeout=timeout, env=run_env, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        subprocess.run(
+            ["systemctl", "--user", "kill", unit],
+            capture_output=True, timeout=10, check=False,
+        )
+        raise
+    except (FileNotFoundError, OSError):
+        return _run_plain(cmd, cwd=cwd, env=run_env, timeout=timeout)
+
+    if proc.returncode != 0 and "running as unit" not in proc.stderr.lower():
+        # The unit never started (no user manager / DBus) — run directly.
+        logger.warning(
+            "systemd-run sandbox unavailable (%s); falling back to direct execution",
+            proc.stderr.strip().splitlines()[0] if proc.stderr.strip() else proc.returncode,
+        )
+        return _run_plain(cmd, cwd=cwd, env=run_env, timeout=timeout)
+
+    proc.stderr = _strip_systemd_status(proc.stderr)
+    return proc
 
 
 def _run_build_cmd(cmd: str, project_dir: Path, timeout: int = 900,
