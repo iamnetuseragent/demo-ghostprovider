@@ -45,29 +45,6 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
   - `ProtectSystem=full` — /usr, /boot, and /etc are read-only
   - `ReadWritePaths` — restricted to the deployed project directory; caches stay inside it (`XDG_CACHE_HOME`, npm/go/cargo/pnpm cache dirs are redirected to `~project/.ghost-cache`, persist between deployments so repeated builds reuse downloaded artifacts, and are removed together with the clone when the service is deleted)
 
-### Threat model (please read)
-
-The systemd sandbox above protects the **running service**, not what happens
-*before* it starts. Deploying one of the three supported services builds it
-from source on your machine, and those build steps (`pip install`, `npm
-install`, `cargo build`, `go build`) execute scripts shipped in the
-repository **with your user's permissions**. The dangerous-command blocklist is
-a safety net against accidents, not a security boundary.
-
-Build steps run sandboxed by default inside a hardened `systemd-run --user`
-transient unit (`NoNewPrivileges=yes`, `ProtectSystem=strict`,
-`ProtectHome=read-only`, `PrivateDevices=yes`, empty
-capability set; read-write only in the project directory, and all tool caches
-(pip, npm/yarn/bun, cargo, go, pnpm, TMPDIR) are redirected to
-`<project>/.ghost-cache` — they persist between builds so repeat deployments
-reuse downloaded artifacts, and are removed together with the clone when the
-service is deleted, so nothing is
-written to your `~/.cache`, `~/.npm`, or `~/.cargo`). Set
-the environment variable `GHOSTPROVIDER_NO_SANDBOX=1` to opt out per
-invocation. When `systemd-run` is unavailable, execution falls back to direct
-execution with a warning. The sandbox still runs as the same user. For
-anything untrusted, run this tool in a dedicated user, VM, or container.
-
 ## System Scan
 
 Scans your machine for prerequisites, detects all listening ports, fingerprints known services (VERT, SearXNG, Memos) and maps your network — gateway, DNS.
