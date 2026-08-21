@@ -1,5 +1,5 @@
 pkgname=demo-ghostprovider
-pkgver=1.7.6
+pkgver=0.12.0
 pkgrel=1
 pkgdesc="TUI for self-hosting & localhost management"
 arch=('any')
@@ -7,8 +7,8 @@ url="https://github.com/iamnetuseragent/demo-ghostprovider"
 license=('custom:Source-Available')
 depends=('python' 'git' 'python-pip')
 makedepends=('git' 'python-virtualenv')
-# Pinned to the v1.7.6 release commit — update pkgver and _commit on each release
-_commit=b9f93a0
+# Pinned to the v0.12.0 release commit — update pkgver and _commit on each release
+_commit=08360a1
 source=("$pkgname-$pkgver.tar.gz::git+https://github.com/iamnetuseragent/demo-ghostprovider.git#commit=$_commit")
 sha256sums=('SKIP')
 
