@@ -1,6 +1,7 @@
 """Service management screen."""
 
 import asyncio
+import logging
 import re
 from typing import ClassVar
 
@@ -21,6 +22,8 @@ from demo_ghostprovider.services import (
     stop_service,
     wait_service_ready,
 )
+
+logger = logging.getLogger("demo_ghostprovider.screens.services")
 
 
 class ServiceListScreen(Screen):
@@ -73,9 +76,8 @@ class ServiceListScreen(Screen):
             self._pending.clear()
             try:
                 self._rebuild_rows()
-            except Exception as e:  # noqa: BLE001
-                if hasattr(self, "app") and self.app:
-                    self.app.notify(f"Rebuild error: {e}", severity="error", timeout=5)
+            except Exception:
+                logger.debug("Failed to rebuild service rows", exc_info=True)
 
     def _blink_animation(self) -> None:
         self._blink_on = not self._blink_on
@@ -232,35 +234,21 @@ class ServiceListScreen(Screen):
         loop = asyncio.get_running_loop()
         try:
             if action == "start":
-                msg = await loop.run_in_executor(None, start_service, name)
+                await loop.run_in_executor(None, start_service, name)
                 await loop.run_in_executor(None, wait_service_ready, name)
             elif action == "stop":
-                msg = await loop.run_in_executor(None, stop_service, name)
-            if not msg.startswith("Failed") and not msg.startswith("Timeout") and "not available" not in msg:
-                if hasattr(self, "app") and self.app:
-                    self.app.notify(msg, timeout=3)
-            else:
-                if hasattr(self, "app") and self.app:
-                    self.app.notify(msg, severity="error", timeout=5)
-        except Exception as e:  # noqa: BLE001
-            if hasattr(self, "app") and self.app:
-                self.app.notify(f"Action error: {e}", severity="error", timeout=5)
+                await loop.run_in_executor(None, stop_service, name)
+        except Exception:
+            logger.debug("Service action failed: %s %s", action, name, exc_info=True)
         await self._refresh()
 
     async def _exec_restart(self, name: str) -> None:
         loop = asyncio.get_running_loop()
         try:
-            msg = await loop.run_in_executor(None, restart_service, name)
+            await loop.run_in_executor(None, restart_service, name)
             await loop.run_in_executor(None, wait_service_ready, name)
-            if not msg.startswith("Failed") and "not available" not in msg:
-                if hasattr(self, "app") and self.app:
-                    self.app.notify(msg, timeout=3)
-            else:
-                if hasattr(self, "app") and self.app:
-                    self.app.notify(msg, severity="error", timeout=5)
-        except Exception as e:  # noqa: BLE001
-            if hasattr(self, "app") and self.app:
-                self.app.notify(f"Restart error: {e}", severity="error", timeout=5)
+        except Exception:
+            logger.debug("Service restart failed: %s", name, exc_info=True)
         await self._refresh()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -311,7 +299,6 @@ class ServiceListScreen(Screen):
         try:
             for c in (getattr(self, "_containers", None) or []):
                 if c.name == name:
-                    # Try to get repo URL from service description
                     repo_url = ""
                     if hasattr(c, "exec_start") and "github.com" in c.exec_start:
                         m = re.search(r'https?://github\.com/\S+', c.exec_start)
@@ -320,14 +307,7 @@ class ServiceListScreen(Screen):
                     if repo_url:
                         self._removed_urls[name] = repo_url
                     break
-            msg = await loop.run_in_executor(None, remove_service, name)
-            if "error" in msg.lower() or "failed" in msg.lower():
-                if hasattr(self, "app") and self.app:
-                    self.app.notify(msg, severity="error", timeout=5)
-            else:
-                if hasattr(self, "app") and self.app:
-                    self.app.notify(msg, timeout=3)
-        except Exception as e:  # noqa: BLE001
-            if hasattr(self, "app") and self.app:
-                self.app.notify(f"Remove error: {e}", severity="error", timeout=5)
+            await loop.run_in_executor(None, remove_service, name)
+        except Exception:
+            logger.debug("Service remove failed: %s", name, exc_info=True)
         await self._refresh()

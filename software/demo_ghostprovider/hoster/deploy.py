@@ -171,7 +171,8 @@ def deploy_service(analysis: RepoAnalysis, recipe: DemoRecipe,
             logs = _get_service_logs(recipe.service_name, 20)
             raise RuntimeError(f"Service crashed immediately after start:\n{logs[:300]}")
 
-        _register_state(recipe.service_name, str(project_dir), analysis.url)
+        _register_state(recipe.service_name, str(project_dir), analysis.url,
+                        unit_name=recipe.service_name)
         result.service_names = [recipe.service_name]
         result.urls = [f"http://localhost:{port}"]
         return result

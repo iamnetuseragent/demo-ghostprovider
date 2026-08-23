@@ -79,9 +79,13 @@ def save(state: dict[str, dict[str, str]]) -> None:
                 pass
 
 
-def register(service_name: str, clone_path: str, repo_url: str) -> None:
+def register(service_name: str, clone_path: str, repo_url: str,
+             unit_name: str | None = None) -> None:
     state = load()
-    state[service_name] = {"clone_path": clone_path, "repo_url": repo_url}
+    entry: dict[str, str] = {"clone_path": clone_path, "repo_url": repo_url}
+    if unit_name:
+        entry["unit_name"] = unit_name
+    state[service_name] = entry
     save(state)
 
 
@@ -96,6 +100,19 @@ def get_clone_path(service_name: str) -> str | None:
     entry = state.get(service_name)
     if isinstance(entry, dict) and os.path.isdir(entry.get("clone_path", "")):
         return entry["clone_path"]
+    return None
+
+
+def get_unit_name(service_name: str) -> str | None:
+    """Return the systemd unit name stored at registration time.
+
+    Returns ``None`` when the entry is missing or has no ``unit_name`` field
+    (backwards-compatible with older state files).
+    """
+    state = load()
+    entry = state.get(service_name)
+    if isinstance(entry, dict):
+        return entry.get("unit_name")
     return None
 
 

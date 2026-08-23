@@ -2,6 +2,7 @@
 set -euo pipefail
 
 INSTALL_DIR="${HOME}/.local/share/demo-ghostprovider"
+DATA_DIR="${HOME}/.local/share/demo-ghostprovider-data"
 BIN_DIR="${HOME}/.local/bin"
 BIN_NAME="demo-ghostprovider"
 CONFIG_DIR="${HOME}/.config/demo-ghostprovider"
@@ -25,6 +26,19 @@ fi
 if [ -d "$INSTALL_DIR" ]; then
   info "=> Removing ${INSTALL_DIR}..."
   rm -rf "$INSTALL_DIR"
+fi
+
+# ── 2b. Remove runtime data (deployed services) ──
+if [ -d "$DATA_DIR" ]; then
+  warn ""
+  warn "Runtime data found at ${DATA_DIR} (deployed services)."
+  read -r -p "Remove it too? [y/N] " answer
+  if [[ "$answer" == "y" || "$answer" == "Y" ]]; then
+    info "=> Removing ${DATA_DIR}..."
+    rm -rf "$DATA_DIR"
+  else
+    warn "Kept ${DATA_DIR}"
+  fi
 fi
 
 # ── 3. Remove launcher script ──
