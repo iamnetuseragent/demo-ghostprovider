@@ -37,8 +37,7 @@ pub(crate) const VIOLET: Color = Color::Rgb(171, 130, 255); // scan sections
 pub(crate) const BLUE: Color = Color::Rgb(97, 143, 255); // services screen theme
 const DIM: Color = Color::Rgb(110, 118, 129); // secondary text
 const BODY: Color = Color::Rgb(205, 213, 224); // regular text
-const ZEBRA_BG: Color = Color::Rgb(22, 26, 33); // alternating table rows
-const SELECT_BG: Color = Color::Rgb(38, 48, 62); // highlighted row background
+const BODY_ALT: Color = Color::Rgb(150, 160, 174); // zebra rows (no background)
 
 /// Gradient ramp used by the animated title and spinners.
 const RAMP: [Color; 3] = [ACCENT, MAGENTA, WARN_YELLOW];
@@ -143,9 +142,15 @@ fn event_loop(
         if event::poll(Duration::from_millis(80))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
+                    let before = std::mem::discriminant(&app.screen);
                     match on_key(app, key.code, key.modifiers) {
                         Flow::Continue => {}
                         Flow::Exit => return Ok(()),
+                    }
+                    // Screen switched: ratatui's cell-diff would keep glyphs
+                    // from the longer previous screen — force a full repaint.
+                    if std::mem::discriminant(&app.screen) != before {
+                        terminal.clear()?;
                     }
                 }
             }
@@ -280,7 +285,21 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
     ])
     .split(area);
 
-    draw_header(f, chunks[0], app.tick);
+    draw_header(f, chunks[0]);
+
+    // Force-clean the body area in THIS frame's buffer so the diff engine
+    // emits overwrites for stale glyphs left by longer previous frames
+    // (ratatui only rewrites cells it believes changed).
+    {
+        let buf = f.buffer_mut();
+        for y in chunks[1].top()..chunks[1].bottom() {
+            for x in chunks[1].left()..chunks[1].right() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.reset();
+                }
+            }
+        }
+    }
 
     match &app.screen {
         Screen::Main { selected } => {
@@ -313,12 +332,15 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
 
 // --- header -----------------------------------------------------------------
 
-fn draw_header(f: &mut ratatui::Frame, area: ratatui::prelude::Rect, tick: u64) {
-    let phase = tick / 3;
-    let logo = gradient_spans("GHOSTPROVIDER", phase);
-    let mut top = vec![Span::from(" ")];
-    top.extend(logo);
-    top.push(Span::styled(" · demo panel", Style::default().fg(DIM)));
+fn draw_header(f: &mut ratatui::Frame, area: ratatui::prelude::Rect) {
+    let top = vec![
+        Span::from(" "),
+        Span::styled(
+            "GHOSTPROVIDER",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · demo panel", Style::default().fg(DIM)),
+    ];
 
     let version = env!("CARGO_PKG_VERSION");
     let bottom = Line::from(vec![
@@ -334,20 +356,6 @@ fn draw_header(f: &mut ratatui::Frame, area: ratatui::prelude::Rect, tick: u64) 
         ),
         area,
     );
-}
-
-/// Per-character cycling gradient over `text`.
-fn gradient_spans(text: &str, phase: u64) -> Vec<Span<'static>> {
-    text.chars()
-        .enumerate()
-        .map(|(i, c)| {
-            let idx = ((i as u64 + phase) % RAMP.len() as u64) as usize;
-            Span::styled(
-                c.to_string(),
-                Style::default().fg(RAMP[idx]).add_modifier(Modifier::BOLD),
-            )
-        })
-        .collect()
 }
 
 // --- main menu --------------------------------------------------------------
@@ -370,31 +378,31 @@ fn draw_main_menu(f: &mut ratatui::Frame, area: ratatui::prelude::Rect, selected
     ];
     let list = List::new(items.iter().enumerate().map(|(i, (icon, t, d, hue))| {
         let sel = i == selected;
-        let base = if sel {
-            Style::default().bg(SELECT_BG)
-        } else {
-            Style::default()
-        };
+        let marker = if sel { " ▶ " } else { "   " };
         ListItem::new(Line::from(vec![
-            Span::styled("   ", base),
             Span::styled(
-                format!("{icon} "),
+                marker,
                 Style::default().fg(*hue).add_modifier(if sel {
                     Modifier::BOLD
                 } else {
                     Modifier::empty()
                 }),
             ),
+            Span::styled(format!("{icon} "), Style::default().fg(*hue)),
             Span::styled(
                 format!("{t} "),
-                base.fg(if sel { Color::White } else { BODY })
+                Style::default()
+                    .fg(if sel { Color::White } else { BODY })
                     .add_modifier(if sel {
                         Modifier::BOLD
                     } else {
                         Modifier::empty()
                     }),
             ),
-            Span::styled(format!("— {d}"), base.fg(DIM)),
+            Span::styled(
+                format!("— {d}"),
+                Style::default().fg(if sel { *hue } else { DIM }),
+            ),
         ]))
     }))
     .block(block("Menu", ACCENT));
@@ -447,6 +455,7 @@ fn spinner_style(tick: u64) -> Style {
 fn colorize_scan(report: &str) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let mut in_ports = false;
+    let mut in_ifaces = false;
     let mut zebra = 0usize;
     for raw in report.lines() {
         let line = raw.strip_prefix('\n').unwrap_or(raw);
@@ -454,6 +463,7 @@ fn colorize_scan(report: &str) -> Vec<Line<'static>> {
 
         if trimmed == "Interfaces:" || trimmed == "Listening ports:" {
             in_ports = trimmed == "Listening ports:";
+            in_ifaces = trimmed == "Interfaces:";
             zebra = 0;
             out.push(Line::from(Span::styled(
                 format!(" {line}"),
@@ -465,30 +475,73 @@ fn colorize_scan(report: &str) -> Vec<Line<'static>> {
                 Style::default().fg(DIM),
             )));
         } else if in_ports && !trimmed.is_empty() {
-            let bg = if zebra % 2 == 1 {
-                Style::default().bg(ZEBRA_BG)
-            } else {
-                Style::default()
-            };
+            // Zebra striping without background fills — alternate text shades.
+            let body_fg = if zebra % 2 == 1 { BODY_ALT } else { BODY };
             zebra += 1;
-            let mut spans = vec![Span::styled(" ".to_string(), bg)];
+            let mut spans = vec![Span::raw(" ")];
             if let Some((port, rest)) = trimmed.split_once(char::is_whitespace) {
                 spans.push(Span::styled(
                     port.to_string(),
-                    bg.fg(ACCENT).add_modifier(Modifier::BOLD),
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                 ));
-                spans.push(Span::styled(format!(" {rest}"), bg.fg(BODY)));
+                spans.push(Span::styled(
+                    format!(" {rest}"),
+                    Style::default().fg(body_fg),
+                ));
             } else {
-                spans.push(Span::styled(trimmed.to_string(), bg.fg(BODY)));
+                spans.push(Span::styled(
+                    trimmed.to_string(),
+                    Style::default().fg(body_fg),
+                ));
+            }
+            out.push(Line::from(spans));
+        } else if in_ifaces && !trimmed.is_empty() && !trimmed.contains(':') {
+            // "name [ip] status" — split by exact whitespace boundaries and
+            // colorize the trailing state token; keep original column gaps.
+            let (head, status) = match trimmed.rfind(char::is_whitespace) {
+                Some(i) => (trimmed[..i].to_string(), trimmed[i + 1..].to_string()),
+                None => (trimmed.to_string(), String::new()),
+            };
+            let (name, rest) = match head.find(char::is_whitespace) {
+                Some(i) => (head[..i].to_string(), head[i..].to_string()),
+                None => (head.clone(), String::new()),
+            };
+            let status_color = match status.as_str() {
+                "up" => OK_GREEN,
+                "down" => ERR_RED,
+                _ => WARN_YELLOW,
+            };
+            let mut spans = vec![
+                Span::raw("   "),
+                Span::styled(name, Style::default().fg(BODY).add_modifier(Modifier::BOLD)),
+            ];
+            if !rest.is_empty() {
+                spans.push(Span::styled(rest, Style::default().fg(DIM)));
+            }
+            if !status.is_empty() {
+                spans.push(Span::styled(
+                    format!(" {status}"),
+                    Style::default().fg(status_color),
+                ));
             }
             out.push(Line::from(spans));
         } else if trimmed.starts_with("[x]") || trimmed.starts_with("[ ]") {
             let ok = trimmed.starts_with("[x]");
-            let mark_color = if ok { OK_GREEN } else { ERR_RED };
+            let (mark, mark_color, rest_color) = if ok {
+                ("✓", OK_GREEN, BODY)
+            } else {
+                ("✗", ERR_RED, DIM)
+            };
             out.push(Line::from(vec![
-                Span::styled(" ", Style::default()),
-                Span::styled(trimmed[..3].to_string(), Style::default().fg(mark_color)),
-                Span::styled(line[3..].to_string(), Style::default().fg(DIM)),
+                Span::raw(" "),
+                Span::styled(
+                    mark.to_string(),
+                    Style::default().fg(mark_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {}", &trimmed[3..]),
+                    Style::default().fg(rest_color),
+                ),
             ]));
         } else if trimmed.starts_with("!") {
             out.push(Line::from(Span::styled(
@@ -712,33 +765,42 @@ fn draw_services(
         .enumerate()
         .map(|(i, (name, status, url))| {
             let sel = i == selected;
-            let base = if sel {
-                Style::default().bg(SELECT_BG)
+            // No background fills — selection is arrow + bold + white,
+            // zebra alternates text shades only.
+            let name_fg = if sel {
+                Color::White
             } else if i % 2 == 1 {
-                Style::default().bg(ZEBRA_BG)
+                BODY_ALT
             } else {
-                Style::default()
+                BODY
             };
+            let url_fg = DIM;
             let status_color = match status.as_str() {
                 "active" => OK_GREEN,
                 "activating" | "reloading" => WARN_YELLOW,
                 _ => ERR_RED,
             };
             ListItem::new(Line::from(vec![
-                Span::styled(if sel { " ▶ " } else { "   " }, base.fg(ACCENT)),
+                Span::styled(
+                    if sel { " ▶ " } else { "   " },
+                    Style::default().fg(ACCENT).add_modifier(if sel {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+                ),
                 Span::styled(
                     format!("{:<16}", name),
-                    base.fg(if sel { Color::White } else { BODY })
-                        .add_modifier(if sel {
-                            Modifier::BOLD
-                        } else {
-                            Modifier::empty()
-                        }),
+                    Style::default().fg(name_fg).add_modifier(if sel {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
                 ),
                 format!("{:<12}", "").into(),
-                Span::styled("● ", base.fg(status_color)),
-                Span::styled(status.clone(), base.fg(status_color)),
-                Span::styled(format!("  {url}"), base.fg(DIM)),
+                Span::styled("● ", Style::default().fg(status_color)),
+                Span::styled(status.clone(), Style::default().fg(status_color)),
+                Span::styled(format!("  {url}"), Style::default().fg(url_fg)),
             ]))
         })
         .collect();
