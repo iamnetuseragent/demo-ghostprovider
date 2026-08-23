@@ -3,6 +3,11 @@
 //! Screen flow mirrors the Python version:
 //! Main menu → System Scan / Deploy (URL input) / My Services.
 //! Long operations run on worker threads reporting through a channel.
+//!
+//! Visual language: neon-on-black maxicolor theme. Every data type owns a
+//! hue (cyan chrome · magenta deploy · green success · amber input/warnings
+//! · red errors · violet scan sections). The event loop ticks ~80ms; the
+//! title gradient and busy spinners are driven off that tick.
 
 mod workers;
 
@@ -22,11 +27,23 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
-pub(crate) const ACCENT: Color = Color::LightCyan;
-pub(crate) const OK_GREEN: Color = Color::LightGreen;
-pub(crate) const WARN_YELLOW: Color = Color::Yellow;
-pub(crate) const ERR_RED: Color = Color::Red;
-pub(crate) const DIM: Color = Color::DarkGray;
+// --- palette (truecolor; terminals without RGB get the nearest ANSI match) ---
+pub(crate) const ACCENT: Color = Color::Rgb(64, 220, 255); // electric cyan — chrome/menu
+pub(crate) const MAGENTA: Color = Color::Rgb(255, 92, 200); // deploy screen theme
+pub(crate) const OK_GREEN: Color = Color::Rgb(80, 250, 123); // success / active units
+pub(crate) const WARN_YELLOW: Color = Color::Rgb(255, 184, 0); // input / warnings
+pub(crate) const ERR_RED: Color = Color::Rgb(255, 85, 85); // failures
+pub(crate) const VIOLET: Color = Color::Rgb(171, 130, 255); // scan sections
+pub(crate) const BLUE: Color = Color::Rgb(97, 143, 255); // services screen theme
+const DIM: Color = Color::Rgb(110, 118, 129); // secondary text
+const BODY: Color = Color::Rgb(205, 213, 224); // regular text
+const ZEBRA_BG: Color = Color::Rgb(22, 26, 33); // alternating table rows
+const SELECT_BG: Color = Color::Rgb(38, 48, 62); // highlighted row background
+
+/// Gradient ramp used by the animated title and spinners.
+const RAMP: [Color; 3] = [ACCENT, MAGENTA, WARN_YELLOW];
+
+const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub(crate) enum Screen {
     Main {
@@ -62,6 +79,8 @@ pub(crate) struct App {
     pub screen: Screen,
     pub rx: Receiver<Msg>,
     pub tx: Sender<Msg>,
+    /// Drives animations; incremented every loop iteration (~80ms).
+    pub tick: u64,
 }
 
 /// Entry point: sets up the terminal, runs the loop, restores the terminal.
@@ -76,6 +95,7 @@ pub fn run() -> anyhow::Result<()> {
         screen: Screen::Main { selected: 0 },
         rx,
         tx,
+        tick: 0,
     };
     let res = event_loop(&mut terminal, &mut app);
 
@@ -118,6 +138,7 @@ fn event_loop(
         }
 
         terminal.draw(|f| draw(f, app))?;
+        app.tick = app.tick.wrapping_add(1);
 
         if event::poll(Duration::from_millis(80))? {
             if let Event::Key(key) = event::read()? {
@@ -217,8 +238,6 @@ fn on_key(app: &mut App, key: KeyCode, mods: KeyModifiers) -> Flow {
             message,
         } => {
             let _ = message; // status messages surface via refresh below
-            let _ = rows;
-            let _ = selected;
             let count = rows.len();
             match key {
                 KeyCode::Esc | KeyCode::Char('q') => app.screen = Screen::Main { selected: 2 },
@@ -255,189 +274,530 @@ fn on_key(app: &mut App, key: KeyCode, mods: KeyModifiers) -> Flow {
 fn draw(f: &mut ratatui::Frame, app: &App) {
     let area = f.area();
     let chunks = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(4),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
     .split(area);
 
-    let title = Paragraph::new(" GHOSTPROVIDER · demo panel")
-        .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(title, chunks[0]);
+    draw_header(f, chunks[0], app.tick);
 
     match &app.screen {
         Screen::Main { selected } => {
-            let items = [
-                ("System Scan", "probe interfaces, ports, fingerprints"),
-                ("Deploy Service", "deploy one of the three curated services"),
-                ("My Services", "manage deployed units"),
-            ];
-            let list = List::new(items.iter().enumerate().map(|(i, (t, d))| {
-                let style = if i == *selected {
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!(" {t} "), style),
-                    Span::styled(format!("— {d}"), Style::default().fg(DIM)),
-                ]))
-            }))
-            .block(block("Menu"));
-            f.render_widget(list, chunks[1]);
+            draw_main_menu(f, chunks[1], *selected);
         }
         Screen::Scan { report, running } => {
-            let text = match (report, running) {
-                (Some(r), _) => r.clone(),
-                (None, true) => "scanning local system...\n(this probes listening ports and fingerprints HTTP services)".into(),
-                (None, false) => String::new(),
-            };
-            f.render_widget(
-                Paragraph::new(text)
-                    .wrap(Wrap { trim: false })
-                    .block(block("System Scan")),
-                chunks[1],
-            );
+            draw_scan(f, chunks[1], report.as_deref(), *running, app.tick);
         }
         Screen::UrlInput {
             buffer,
             error,
             busy,
         } => {
-            let mut text = vec![
-                Line::from(" Supported demo services:"),
-                Line::from(vec![Span::styled(
-                    "  VERT-sh/VERT · searxng/searxng · usememos/memos",
-                    Style::default().fg(DIM),
-                )]),
-                Line::from(""),
-                Line::from(format!(" GitHub URL: {buffer}")),
-            ];
-            if let Some(e) = error {
-                text.push(Line::from(Span::styled(
-                    e.clone(),
-                    Style::default().fg(ERR_RED),
-                )));
-            }
-            if *busy {
-                text.push(Line::from(Span::styled(
-                    "resolving...",
-                    Style::default().fg(WARN_YELLOW),
-                )));
-            }
-            f.render_widget(
-                Paragraph::new(text)
-                    .wrap(Wrap { trim: false })
-                    .block(block("Deploy Service")),
-                chunks[1],
-            );
+            draw_url_input(f, chunks[1], buffer, error.as_deref(), *busy, app.tick);
         }
-        Screen::Deploy { lines, .. } => {
-            let spans: Vec<Line> = lines.iter().map(|l| log_line(l)).collect();
-            f.render_widget(
-                Paragraph::new(spans)
-                    .wrap(Wrap { trim: false })
-                    .block(block("Deployment")),
-                chunks[1],
-            );
+        Screen::Deploy { lines, done } => {
+            draw_deploy(f, chunks[1], lines, *done);
         }
         Screen::Services {
             rows,
             selected,
             message,
         } => {
-            let title = match message {
-                Some(m) => format!("My Services  [s]top [t]art [d]elete [r]efresh  — {m}"),
-                None => "My Services  [s]top [t]art [d]elete [r]efresh".to_string(),
-            };
-            if rows.is_empty() {
-                f.render_widget(
-                    Paragraph::new(
-                        "No services deployed yet.\n\nUse “Deploy Service” from the menu.",
-                    )
-                    .block(block(&title)),
-                    chunks[1],
-                );
-            } else {
-                let items: Vec<ListItem> = rows
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (name, status, url))| {
-                        let sel = i == *selected;
-                        let status_span = match status.as_str() {
-                            "active" => Span::styled(status.clone(), Style::default().fg(OK_GREEN)),
-                            "activating" | "reloading" => {
-                                Span::styled(status.clone(), Style::default().fg(WARN_YELLOW))
-                            }
-                            other => Span::styled(other.to_string(), Style::default().fg(ERR_RED)),
-                        };
-                        ListItem::new(Line::from(vec![
-                            Span::styled(
-                                if sel { " ▶ " } else { "   " },
-                                Style::default().fg(ACCENT),
-                            ),
-                            Span::styled(
-                                format!("{:<16}", name),
-                                Style::default().add_modifier(if sel {
-                                    Modifier::BOLD
-                                } else {
-                                    Modifier::empty()
-                                }),
-                            ),
-                            format!("{:<12}", "").into(),
-                            status_span,
-                            Span::styled(format!("  {url}"), Style::default().fg(DIM)),
-                        ]))
-                    })
-                    .collect();
-                f.render_widget(List::new(items).block(block(&title)), chunks[1]);
-            }
+            draw_services(f, chunks[1], rows, *selected, message.as_deref());
         }
     }
 
-    let hint = match &app.screen {
-        Screen::Main { .. } => "↑↓ select · Enter choose · q quit",
-        Screen::Scan { .. } => "Esc back",
-        Screen::UrlInput { busy, .. } => {
-            if *busy {
-                "working..."
-            } else {
-                "Enter deploy · Esc back"
-            }
-        }
-        Screen::Deploy { done, .. } => {
-            if done.is_some() {
-                "Enter back"
-            } else {
-                "working..."
-            }
-        }
-        Screen::Services { .. } => "↑↓ select · action keys shown above · Esc back",
-    };
+    f.render_widget(Paragraph::new(hint_line(&app.screen)), chunks[2]);
+}
+
+// --- header -----------------------------------------------------------------
+
+fn draw_header(f: &mut ratatui::Frame, area: ratatui::prelude::Rect, tick: u64) {
+    let phase = tick / 3;
+    let logo = gradient_spans("GHOSTPROVIDER", phase);
+    let mut top = vec![Span::from(" ")];
+    top.extend(logo);
+    top.push(Span::styled(" · demo panel", Style::default().fg(DIM)));
+
+    let version = env!("CARGO_PKG_VERSION");
+    let bottom = Line::from(vec![
+        Span::styled(" self-hosting demo · local-only", Style::default().fg(DIM)),
+        Span::styled(format!(" · v{version} "), Style::default().fg(BLUE)),
+    ]);
+
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(" {hint}"),
-            Style::default().fg(DIM),
-        ))),
-        chunks[2],
+        Paragraph::new(vec![Line::from(top), bottom]).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(ACCENT)),
+        ),
+        area,
     );
 }
 
-fn log_line(line: &str) -> Line<'static> {
-    let style = if line.starts_with('!') || line.contains("failed") || line.contains("ERROR") {
-        Style::default().fg(ERR_RED)
-    } else if line.contains("complete") || line.contains("listening") {
-        Style::default().fg(OK_GREEN)
+/// Per-character cycling gradient over `text`.
+fn gradient_spans(text: &str, phase: u64) -> Vec<Span<'static>> {
+    text.chars()
+        .enumerate()
+        .map(|(i, c)| {
+            let idx = ((i as u64 + phase) % RAMP.len() as u64) as usize;
+            Span::styled(
+                c.to_string(),
+                Style::default().fg(RAMP[idx]).add_modifier(Modifier::BOLD),
+            )
+        })
+        .collect()
+}
+
+// --- main menu --------------------------------------------------------------
+
+fn draw_main_menu(f: &mut ratatui::Frame, area: ratatui::prelude::Rect, selected: usize) {
+    let items = [
+        (
+            "◉",
+            "System Scan",
+            "probe interfaces, ports, fingerprints",
+            ACCENT,
+        ),
+        (
+            "▲",
+            "Deploy Service",
+            "deploy one of the three curated services",
+            MAGENTA,
+        ),
+        ("☰", "My Services", "manage deployed units", OK_GREEN),
+    ];
+    let list = List::new(items.iter().enumerate().map(|(i, (icon, t, d, hue))| {
+        let sel = i == selected;
+        let base = if sel {
+            Style::default().bg(SELECT_BG)
+        } else {
+            Style::default()
+        };
+        ListItem::new(Line::from(vec![
+            Span::styled("   ", base),
+            Span::styled(
+                format!("{icon} "),
+                Style::default().fg(*hue).add_modifier(if sel {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+            ),
+            Span::styled(
+                format!("{t} "),
+                base.fg(if sel { Color::White } else { BODY })
+                    .add_modifier(if sel {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+            Span::styled(format!("— {d}"), base.fg(DIM)),
+        ]))
+    }))
+    .block(block("Menu", ACCENT));
+    f.render_widget(list, area);
+}
+
+// --- system scan ------------------------------------------------------------
+
+fn draw_scan(
+    f: &mut ratatui::Frame,
+    area: ratatui::prelude::Rect,
+    report: Option<&str>,
+    running: bool,
+    tick: u64,
+) {
+    let mut lines: Vec<Line> = Vec::new();
+    match (report, running) {
+        (Some(r), _) => lines.extend(colorize_scan(r)),
+        (None, true) => {
+            lines.push(Line::from(vec![
+                Span::styled(spinner_char(tick), spinner_style(tick)),
+                Span::styled(" scanning local system...", Style::default().fg(DIM)),
+            ]));
+            lines.push(Line::from(Span::styled(
+                "  (this probes listening ports and fingerprints HTTP services)",
+                Style::default().fg(DIM),
+            )));
+        }
+        (None, false) => {}
+    }
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(block("System Scan", VIOLET)),
+        area,
+    );
+}
+
+fn spinner_char(tick: u64) -> &'static str {
+    SPINNER_FRAMES[(tick / 2) as usize % SPINNER_FRAMES.len()]
+}
+
+fn spinner_style(tick: u64) -> Style {
+    Style::default()
+        .fg(RAMP[(tick / 6) as usize % RAMP.len()])
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Heuristic colorizer for the analyzer report (see workers::spawn_scan).
+fn colorize_scan(report: &str) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    let mut in_ports = false;
+    let mut zebra = 0usize;
+    for raw in report.lines() {
+        let line = raw.strip_prefix('\n').unwrap_or(raw);
+        let trimmed = line.trim_start();
+
+        if trimmed == "Interfaces:" || trimmed == "Listening ports:" {
+            in_ports = trimmed == "Listening ports:";
+            zebra = 0;
+            out.push(Line::from(Span::styled(
+                format!(" {line}"),
+                Style::default().fg(VIOLET).add_modifier(Modifier::BOLD),
+            )));
+        } else if trimmed.starts_with("PORT ") {
+            out.push(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(DIM),
+            )));
+        } else if in_ports && !trimmed.is_empty() {
+            let bg = if zebra % 2 == 1 {
+                Style::default().bg(ZEBRA_BG)
+            } else {
+                Style::default()
+            };
+            zebra += 1;
+            let mut spans = vec![Span::styled(" ".to_string(), bg)];
+            if let Some((port, rest)) = trimmed.split_once(char::is_whitespace) {
+                spans.push(Span::styled(
+                    port.to_string(),
+                    bg.fg(ACCENT).add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(format!(" {rest}"), bg.fg(BODY)));
+            } else {
+                spans.push(Span::styled(trimmed.to_string(), bg.fg(BODY)));
+            }
+            out.push(Line::from(spans));
+        } else if trimmed.starts_with("[x]") || trimmed.starts_with("[ ]") {
+            let ok = trimmed.starts_with("[x]");
+            let mark_color = if ok { OK_GREEN } else { ERR_RED };
+            out.push(Line::from(vec![
+                Span::styled(" ", Style::default()),
+                Span::styled(trimmed[..3].to_string(), Style::default().fg(mark_color)),
+                Span::styled(line[3..].to_string(), Style::default().fg(DIM)),
+            ]));
+        } else if trimmed.starts_with("!") {
+            out.push(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(ERR_RED).add_modifier(Modifier::BOLD),
+            )));
+        } else if trimmed.starts_with("VPN active:") {
+            out.push(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(WARN_YELLOW),
+            )));
+        } else if trimmed.contains("MISSING")
+            || trimmed.contains("not installed")
+            || trimmed.contains("offline")
+            || trimmed.contains("missing")
+        {
+            out.push(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(ERR_RED),
+            )));
+        } else {
+            out.push(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(BODY),
+            )));
+        }
+    }
+    out
+}
+
+// --- url input --------------------------------------------------------------
+
+fn draw_url_input(
+    f: &mut ratatui::Frame,
+    area: ratatui::prelude::Rect,
+    buffer: &str,
+    error: Option<&str>,
+    busy: bool,
+    tick: u64,
+) {
+    let mut text = vec![
+        Line::from(Span::styled(
+            " Supported demo services:",
+            Style::default().fg(DIM),
+        )),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("VERT-sh/VERT", Style::default().fg(ACCENT)),
+            Span::styled(" · ", Style::default().fg(DIM)),
+            Span::styled("searxng/searxng", Style::default().fg(WARN_YELLOW)),
+            Span::styled(" · ", Style::default().fg(DIM)),
+            Span::styled("usememos/memos", Style::default().fg(OK_GREEN)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" GitHub URL: ", Style::default().fg(WARN_YELLOW)),
+            Span::styled(buffer.to_string(), Style::default().fg(Color::White)),
+            cursor_span(tick),
+        ]),
+    ];
+
+    if let Some(e) = error {
+        text.push(Line::from(Span::styled(
+            format!(" ✗ {e}"),
+            Style::default().fg(ERR_RED),
+        )));
+    } else if !buffer.trim().is_empty() {
+        let ok = buffer.trim().starts_with("https://");
+        let (mark, msg, color) = if ok {
+            ("✓", " looks like a GitHub URL", OK_GREEN)
+        } else {
+            (
+                "△",
+                " expected https://github.com/<owner>/<repo>",
+                WARN_YELLOW,
+            )
+        };
+        text.push(Line::from(Span::styled(
+            format!(" {mark}{msg}"),
+            Style::default().fg(color),
+        )));
+    }
+    if busy {
+        text.push(Line::from(vec![
+            Span::styled(spinner_char(tick), spinner_style(tick)),
+            Span::styled(" resolving...", Style::default().fg(WARN_YELLOW)),
+        ]));
+    }
+    f.render_widget(
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .block(block("Deploy Service", WARN_YELLOW)),
+        area,
+    );
+}
+
+/// Blinking terminal-style cursor block.
+fn cursor_span(tick: u64) -> Span<'static> {
+    if (tick / 4) % 2 == 0 {
+        Span::styled("█", Style::default().fg(WARN_YELLOW))
     } else {
-        Style::default().fg(Color::Reset)
+        Span::raw(" ")
+    }
+}
+
+// --- deploy -----------------------------------------------------------------
+
+fn draw_deploy(
+    f: &mut ratatui::Frame,
+    area: ratatui::prelude::Rect,
+    lines: &[String],
+    done: Option<bool>,
+) {
+    let inner = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(done.map_or(0, |_| 1)),
+    ])
+    .split(area);
+    let spans: Vec<Line> = lines.iter().map(|l| log_line(l)).collect();
+    f.render_widget(
+        Paragraph::new(spans)
+            .wrap(Wrap { trim: false })
+            .block(block("Deployment", MAGENTA)),
+        inner[0],
+    );
+    if let Some(ok) = done {
+        let (label, fg) = if ok {
+            (" ✔ DEPLOYED ✔ ", OK_GREEN)
+        } else {
+            (" ✖ FAILED ✖ ", ERR_RED)
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                label,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(fg)
+                    .add_modifier(Modifier::BOLD),
+            )))
+            .alignment(ratatui::layout::Alignment::Center),
+            inner[1],
+        );
+    }
+}
+
+/// Colorize one deployment log line by its shape.
+fn log_line(line: &str) -> Line<'static> {
+    let s = line.trim_start();
+    let style = if s.starts_with('!') || s.contains("failed") || s.contains("ERROR") {
+        Style::default().fg(ERR_RED)
+    } else if let Some(url) = s.strip_prefix("listening on ") {
+        return Line::from(vec![
+            Span::styled(" ✔ listening on ", Style::default().fg(OK_GREEN)),
+            Span::styled(
+                url.to_string(),
+                Style::default().fg(OK_GREEN).add_modifier(Modifier::BOLD),
+            ),
+        ]);
+    } else if s.ends_with("...") {
+        Style::default().fg(WARN_YELLOW)
+    } else if s.starts_with("=>") {
+        Style::default().fg(ACCENT)
+    } else {
+        Style::default().fg(BODY)
     };
     Line::from(Span::styled(format!(" {line}"), style))
 }
 
-fn block(title: &str) -> Block<'_> {
-    Block::default().borders(Borders::ALL).title(Span::styled(
-        format!(" {title} "),
-        Style::default().fg(ACCENT),
-    ))
+// --- my services ------------------------------------------------------------
+
+fn draw_services(
+    f: &mut ratatui::Frame,
+    area: ratatui::prelude::Rect,
+    rows: &[(String, String, String)],
+    selected: usize,
+    message: Option<&str>,
+) {
+    let mut title = Line::from(vec![
+        Span::styled(" My Services ", Style::default().fg(BLUE)),
+        Span::styled("[", Style::default().fg(DIM)),
+        Span::styled("s", Style::default().fg(WARN_YELLOW)),
+        Span::styled("]top ", Style::default().fg(DIM)),
+        Span::styled("[", Style::default().fg(DIM)),
+        Span::styled("t", Style::default().fg(OK_GREEN)),
+        Span::styled("]art ", Style::default().fg(DIM)),
+        Span::styled("[", Style::default().fg(DIM)),
+        Span::styled("d", Style::default().fg(ERR_RED)),
+        Span::styled("]elete ", Style::default().fg(DIM)),
+        Span::styled("[", Style::default().fg(DIM)),
+        Span::styled("r", Style::default().fg(ACCENT)),
+        Span::styled("]efresh", Style::default().fg(DIM)),
+    ]);
+    if let Some(m) = message {
+        title.push_span(Span::styled(
+            format!("  — {m}"),
+            Style::default().fg(WARN_YELLOW),
+        ));
+    }
+
+    if rows.is_empty() {
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    " No services deployed yet.",
+                    Style::default().fg(DIM),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    " Use “Deploy Service” from the menu.",
+                    Style::default().fg(MAGENTA),
+                )),
+            ])
+            .block(Block::default().borders(Borders::ALL).title(title)),
+            area,
+        );
+        return;
+    }
+
+    let items: Vec<ListItem> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, (name, status, url))| {
+            let sel = i == selected;
+            let base = if sel {
+                Style::default().bg(SELECT_BG)
+            } else if i % 2 == 1 {
+                Style::default().bg(ZEBRA_BG)
+            } else {
+                Style::default()
+            };
+            let status_color = match status.as_str() {
+                "active" => OK_GREEN,
+                "activating" | "reloading" => WARN_YELLOW,
+                _ => ERR_RED,
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(if sel { " ▶ " } else { "   " }, base.fg(ACCENT)),
+                Span::styled(
+                    format!("{:<16}", name),
+                    base.fg(if sel { Color::White } else { BODY })
+                        .add_modifier(if sel {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                format!("{:<12}", "").into(),
+                Span::styled("● ", base.fg(status_color)),
+                Span::styled(status.clone(), base.fg(status_color)),
+                Span::styled(format!("  {url}"), base.fg(DIM)),
+            ]))
+        })
+        .collect();
+    f.render_widget(
+        List::new(items).block(Block::default().borders(Borders::ALL).title(title)),
+        area,
+    );
+}
+
+// --- hint bar ---------------------------------------------------------------
+
+fn hint_line(screen: &Screen) -> Line<'static> {
+    let pairs: Vec<(&str, Color)> = match screen {
+        Screen::Main { .. } => vec![
+            ("↑↓ select", ACCENT),
+            ("Enter choose", OK_GREEN),
+            ("q quit", MAGENTA),
+        ],
+        Screen::Scan { .. } => vec![("Esc back", VIOLET)],
+        Screen::UrlInput { busy, .. } => {
+            if *busy {
+                vec![("working…", WARN_YELLOW)]
+            } else {
+                vec![("Enter deploy", OK_GREEN), ("Esc back", WARN_YELLOW)]
+            }
+        }
+        Screen::Deploy { done, .. } => {
+            if done.is_some() {
+                vec![("Enter back", MAGENTA)]
+            } else {
+                vec![("working…", WARN_YELLOW)]
+            }
+        }
+        Screen::Services { .. } => vec![
+            ("↑↓ select", BLUE),
+            ("s/t/d act", BLUE),
+            ("r refresh", ACCENT),
+            ("Esc back", BLUE),
+        ],
+    };
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, (text, color)) in pairs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", Style::default().fg(DIM)));
+        }
+        spans.push(Span::styled(
+            format!(" {text}"),
+            Style::default().fg(*color),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn block(title: &str, color: Color) -> Block<'_> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ))
 }
