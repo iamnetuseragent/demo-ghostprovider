@@ -32,12 +32,14 @@ confirm() {
 command -v systemctl >/dev/null && {
     info "=> Stopping and removing demo-* user units..."
     {
-        systemctl --user list-units --all --type=service --plain --no-legend 2>/dev/null | awk '{print $1}'
-        systemctl --user list-unit-files --type=service --plain --no-legend 2>/dev/null | awk '{print $1}'
+        systemctl --user list-units --all --type=service --plain --no-legend 2>/dev/null | awk '{print $1}' || true
+        systemctl --user list-unit-files --type=service --plain --no-legend 2>/dev/null | awk '{print $1}' || true
         # Units registered in state may already be stopped; catch them too.
-        [ -f "${STATE_DIR}/state.json" ] && grep -o '"unit_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
-            "${STATE_DIR}/state.json" | cut -d'"' -f4
-    } | sort -u | grep '^demo-' | while read -r unit; do
+        if [ -f "${STATE_DIR}/state.json" ]; then
+            grep -o '"unit_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+                "${STATE_DIR}/state.json" | cut -d'"' -f4 || true
+        fi
+    } | sort -u | { grep '^demo-' || true; } | while read -r unit; do
         systemctl --user stop "$unit" 2>/dev/null || true
         systemctl --user disable "$unit" 2>/dev/null || true
         rm -f "${UNIT_DIR}/${unit}"
