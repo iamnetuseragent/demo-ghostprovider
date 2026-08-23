@@ -14,7 +14,7 @@ set -euo pipefail
 # the mirror exists so one takedown does not orphan the project.
 REPOS=(
   "https://github.com/iamnetuseragent/demo-ghostprovider.git"
-  "https://codeberg.org/iamnetuseragent/demo-ghostprovider.git"
+  "https://codeberg.org/netuser/demo-ghostprovider.git"
 )
 
 SRC_DIR="${HOME}/.local/share/demo-ghostprovider"
@@ -32,8 +32,12 @@ case "$(uname -s)" in
 esac
 
 command -v systemctl >/dev/null || err "systemctl not found. demo-ghostprovider requires systemd."
-systemctl --user is-system-running >/dev/null 2>&1 \
-  || err "Your systemd *user session* is not running (see 'systemctl --user is-system-running')."
+# degraded = working session with some unrelated failed unit; perfectly usable.
+system_state="$(systemctl --user is-system-running 2>/dev/null || true)"
+case "$system_state" in
+  running|degraded) ;;
+  *) err "Your systemd *user session* is not ready (state: ${system_state:-unknown}). See 'systemctl --user is-system-running'." ;;
+esac
 command -v git      >/dev/null || err "git not found. Install git first."
 command -v cargo    >/dev/null || err "cargo not found. Install Rust via https://rustup.rs (or your distro's rust+cargo)."
 
