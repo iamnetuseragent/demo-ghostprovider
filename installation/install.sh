@@ -48,6 +48,9 @@ if [ -d "$SRC_DIR/.git" ]; then
     clone_ok=yes
   fi
 else
+  # Leftover directory without a checkout (e.g. data-only remains) must not
+  # block cloning.
+  [ ! -d "$SRC_DIR" ] || rm -rf "$SRC_DIR"
   for repo in "${REPOS[@]}"; do
     host="$(printf '%s' "$repo" | sed -E 's#https://([^/]+)/.*#\1#')"
     info "   trying $host ..."
