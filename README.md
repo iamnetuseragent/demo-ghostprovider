@@ -9,7 +9,7 @@
 Paste a GitHub URL — deploy one of the three supported services as a systemd service.
 Private, local, no third parties.
 
-![Demo GhostProvider](assets/demo-ghostprovider.webp)
+![Demo GhostProvider](assets/demo-ghostprovider.png)
 
 ## Requirements
 
@@ -98,3 +98,5 @@ curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/m
 ```
 
 This stops and removes all `demo-*` systemd units, the launcher binary, the installation directory with all deployed service data, and the state directory (including per-service secrets).
+
+> Installed via `makepkg -si`? The script only cleans its own paths (`~/.local/bin`, data dirs) — remove the pacman copy with `pacman -R demo-ghostprovider`.
