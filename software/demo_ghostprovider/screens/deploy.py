@@ -304,7 +304,8 @@ class HostingScreen(Screen):
         self._done = True
 
     def on_key(self, event) -> None:
-        if event.key == "enter" and getattr(self, "_done", False):
-            while not isinstance(self.app.screen, MainScreen):
-                self.app.pop_screen()
+        if event.key == "enter":
             event.stop()
+            if getattr(self, "_done", False):
+                while not isinstance(self.app.screen, MainScreen):
+                    self.app.pop_screen()
