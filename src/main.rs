@@ -14,31 +14,44 @@ use anyhow::Context;
 
 use demo_ghostprovider::{netlog, selftest, serve};
 
+/// Write to stdout, tolerating closed pipes (`| head`) without panicking.
+fn write_stdout(s: &str) {
+    use std::io::Write;
+    let _ = std::io::stdout().lock().write_all(s.as_bytes());
+}
+
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     match args.first().map(String::as_str) {
         Some("--version" | "-V") => {
-            println!("demo-ghostprovider {}", env!("CARGO_PKG_VERSION"));
+            // Ignore write errors (e.g. closed pipe from `| head`) instead of panicking.
+            write_stdout(&format!(
+                "demo-ghostprovider {}\n",
+                env!("CARGO_PKG_VERSION")
+            ));
         }
         Some("--show-endpoints") => {
-            println!("Compiled-in remote allowlist:");
+            let mut out = String::from("Compiled-in remote allowlist:\n");
             for h in netlog::ALLOWED_ENDPOINTS {
-                println!("  {h}");
+                out.push_str(&format!("  {h}\n"));
             }
-            println!("Local health-check hosts (never used for API calls):");
+            out.push_str("Local health-check hosts (never used for API calls):\n");
             for h in netlog::LOCAL_ENDPOINTS {
-                println!("  {h}");
+                out.push_str(&format!("  {h}\n"));
             }
             let summary = netlog::session_summary();
             if summary.is_empty() {
-                println!("\nNo outbound requests made this session.");
+                out.push_str("\nNo outbound requests made this session.\n");
             } else {
-                println!("\nThis session:");
+                out.push_str("\nThis session:\n");
                 for (host, (total, errors)) in &summary {
-                    println!("  {host}: {total} request(s), {errors} with errors");
+                    out.push_str(&format!(
+                        "  {host}: {total} request(s), {errors} with errors\n"
+                    ));
                 }
             }
+            write_stdout(&out);
         }
         Some("--selftest") => {
             selftest::run()?;
