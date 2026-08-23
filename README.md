@@ -1,97 +1,97 @@
-<h1 align="center">Automated self-hosting platform</h1>
+# demo-ghostprovider (Rust edition)
 
-> <p align="center">demo-ghostprovider is a restricted demo build of GhostProvider that automates deployment and management of exactly three services as systemd user units.</p>
+Local-first demo hosting panel. Deploys three curated self-hostable services
+as hardened systemd **user** services from a terminal UI:
 
-![GHOST PROVIDER Panel](assets/GHOSTPROVIDER%20PANEL.JPEG)
+| Service | Source |
+|---|---|
+| VERT (file converter) | `VERT-sh/VERT` |
+| SearXNG (metasearch) | `searxng/searxng` |
+| Memos (note taking) | `usememos/memos` |
 
-## One-Click Deploy
-
-Paste a GitHub URL — deploy one of the three supported services as a systemd service.
-Private, local, no third parties.
-
-![Demo GhostProvider](assets/demo-ghostprovider.webp)
+This is a ground-up rewrite of the Python demo-ghostprovider in Rust,
+driven by an independent code audit. The legacy Python implementation is
+preserved, frozen and unmaintained, in the [`archive/python`](https://github.com/iamnetuseragent/demo-ghostprovider/tree/archive/python)
+branch of this same repository — full git history included.
 
 ## Requirements
 
-- Python 3.10+
-- systemd (user-level)
-- git
-- Linux (tested on Arch, Ubuntu, Fedora)
+- Linux with a working systemd **user session**
+  (`systemctl --user is-system-running` must not report `offline`)
+- git, cargo (see [rustup](https://rustup.rs)); no Python needed anymore
 
-## Tech Stack
+## Install
 
-- Python 3.10+ / [Textual](https://github.com/Textualize/textual) (TUI framework)
-- systemd (user-level service management)
-- requests (GitHub API interaction)
-
-## Why systemd?
-
-GhostProvider uses systemd user-level services because they provide:
-- **No root required** — every user can manage their own services
-- **Auto-start on login** — services survive reboots without manual config
-- **Clean removal** — `systemctl --user disable` + delete unit file; demo-ghostprovider also cleans the cloned repo, secrets file, and lingering ports
-- **Sandboxing** — built-in security directives (NoNewPrivileges, ProtectHome, ProtectSystem)
-
-This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux distributions.
-
-## Security Model
-
-- **All data stays local** — no telemetry, no external requests beyond GitHub API
-- **No root required** — services run as systemd user-level units
-- **Explicit confirmation before deploy** — the software always asks YES/NO before hosting a service
-- **Service sandboxing:**
-  - `NoNewPrivileges=yes` — prevents privilege escalation
-  - `ProtectHome=read-only` — no write access to home directory
-  - `ProtectSystem=full` — /usr, /boot, and /etc are read-only
-  - `ReadWritePaths` — restricted to the deployed project directory; caches stay inside it (`XDG_CACHE_HOME`, npm/go/cargo/pnpm cache dirs are redirected to `~project/.ghost-cache`, persist between deployments so repeated builds reuse downloaded artifacts, and are removed together with the clone when the service is deleted)
-
-## System Scan
-
-Scans your machine for prerequisites, detects all listening ports, fingerprints known services (VERT, SearXNG, Memos) and maps your network — gateway, DNS.
-
-### Why System Scan?
-
-Before deploying a new service, demo-ghostprovider checks what's already running on your machine:
-- **Prerequisites** — do you have Python, systemd, git installed?
-- **Listening ports** — which ports are already in use?
-- **Known services** — is SearXNG, Memos, or VERT already running?
-
-This avoids port conflicts and helps GhostProvider choose the right deployment strategy. All data stays on your machine — nothing is sent anywhere.
-
-## Control panel
-
-Full dashboard for all deployed services. Start, stop, restart, or remove — one click cleans the service, unit file, cloned repo, secrets file, and lingering ports. GhostProvider cleans up the resources it manages; applications may still leave their own state (databases, caches, external sockets) elsewhere.
-
-## Service support
-
-This is a restricted demo version of GhostProvider that only supports deploying the following services:
-
-- **VERT** - https://github.com/VERT-sh/VERT
-- **SearXNG** - https://github.com/searxng/searxng
-- **Memos** - https://github.com/usememos/memos
-
-## Quick Start (Linux)
-
-```bash
-curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/installation/install.sh | bash
-```
-
-## Uninstall
-
-```bash
-curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/installation/uninstall.sh | bash
-```
-
-## Install (Arch Linux)
-
-```bash
-git clone https://github.com/iamnetuseragent/demo-ghostprovider.git
+```sh
+git clone https://github.com/iamnetuseragent/demo-ghostprovider.git \
+  || git clone https://codeberg.org/iamnetuseragent/demo-ghostprovider.git
 cd demo-ghostprovider
-makepkg -si
+./installation/install.sh
 ```
 
-## Usage
+The installer clones from GitHub and falls back to the Codeberg mirror.
+It never asks for credentials and never reads `/dev/tty`.
 
-```bash
-demo-ghostprovider
+## Transparency
+
+This program makes exactly three kinds of outbound network contacts:
+
+1. `api.github.com` — repo metadata during scan/deploy
+2. `github.com` — `git clone` of the service you chose to deploy
+3. `raw.githubusercontent.com` — fetching build files for analysis
+
+That list is **compiled into the binary** (`src/hoster/httpclient.rs`) and the
+HTTP client refuses every other host — including redirects to them. Loopback
+health checks against your own services are separate (`LOCAL_ENDPOINTS`) and
+are never used for API calls.
+
+Verify without trusting this README:
+
+```sh
+demo-ghostprovider --show-endpoints   # print the compiled-in allowlist + session counters
+tail -f ~/.local/state/demo-ghostprovider/net.log   # every request, logged locally
+GHOSTPROVIDER_NO_NETLOG=1 demo-ghostprovider          # disable local logging if you want
 ```
+
+A test (`tests/pin_allowlist.rs`) fails CI if anyone adds an endpoint without
+updating the documented allowlist.
+
+## Honest threat model — read before trusting any "privacy tool"
+
+What this software actually protects:
+
+- your machine from services running as root (everything runs as your user,
+  in `systemd-nspawn` isolation where available)
+- you from silent telemetry *by this program*: deny-by-default networking +
+  local audit log make that checkable instead of believable
+
+What it does **not** protect:
+
+- **the deployed services themselves** still phone home if their authors made
+  them do so (analytics inside VERT/SearXNG/Memos is out of our control);
+  run them on a VLAN or with an egress firewall if you care
+- **your identity at the network layer**: your ISP / VPN provider sees the
+  connections; this tool does not route traffic through anything
+- **compromised upstream sources**: we pin recipes to known repos but cannot
+  audit upstream code you choose to deploy
+
+Anyone claiming more than this is selling you something.
+
+## Development
+
+```sh
+make build    # debug build
+make test     # unit tests (30)
+make clippy   # lint gate, zero warnings expected
+make musl     # reproducible static-pie release (pinned container image)
+./target/debug/demo-ghostprovider --selftest   # live-systemd E2E, loopback only
+```
+
+The static release build runs inside a digest-pinned Arch container image;
+the pin lives in `scripts/build-musl.sh` and is bumped consciously.
+Empirical notes on systemd unit semantics discovered while building the
+deploy pipeline are in [`docs/FINDINGS-systemd-stand.md`](docs/FINDINGS-systemd-stand.md).
+
+## License
+
+See [LICENSE](LICENSE).
