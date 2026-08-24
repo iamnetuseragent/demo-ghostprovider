@@ -68,11 +68,15 @@ One minisign keypair covers demo and full-version artifacts.
 
 ```
 public key : docs/release.pub (committed in both repositories)
-fingerprint: <TO-BE-FILLED after scripts/keygen-release.sh>
+fingerprint: 3673A05B26E03D3E
 ```
 
-Until a fingerprint is published here, treat unsigned artifacts as
-unreleased builds, not as products.
+Verify any release artifact:
+
+```sh
+minisign -Vm SHA256SUMS -p docs/release.pub
+sha256sum -c SHA256SUMS
+```
 
 ## Threat model
 
