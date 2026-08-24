@@ -48,7 +48,7 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
 
 ## System Scan
 
-Scans your machine for prerequisites, detects all listening ports, fingerprints known services (VERT, SearXNG, Memos) and maps your network — gateway, DNS.
+Scans your machine for prerequisites and maps occupied ports with their owning processes — nothing more. Deliberately: no VPN detection, no service fingerprinting, so the report stays useless to anyone but you.
 
 ### Why System Scan?
 

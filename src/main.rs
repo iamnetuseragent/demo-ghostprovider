@@ -67,14 +67,23 @@ fn main() -> anyhow::Result<()> {
         }
         // Internal subcommand for scripted E2E: full pipeline without the TUI.
         Some("__deploy") => {
+            use std::cell::RefCell;
             let url = args.get(1).context("usage: __deploy GITHUB_URL")?;
+            let painter = RefCell::new(demo_ghostprovider::output::Painter::new());
+            println!();
+            println!("{}", painter.borrow().header(url));
             let outcome = demo_ghostprovider::hoster::deploy::run_deployment(url, &|line| {
-                println!("{line}");
+                for out in painter.borrow_mut().render(&line) {
+                    println!("{out}");
+                }
             });
             match outcome {
-                demo_ghostprovider::hoster::deploy::DeployOutcome::Deployed => {}
+                demo_ghostprovider::hoster::deploy::DeployOutcome::Deployed => {
+                    println!("{}", painter.borrow().summary(true));
+                }
                 other => {
-                    eprintln!("deploy failed: {other:?}");
+                    eprintln!("{}", painter.borrow().summary(false));
+                    eprintln!("  reason: {other:?}");
                     std::process::exit(1);
                 }
             }

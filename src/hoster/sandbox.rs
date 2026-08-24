@@ -85,6 +85,12 @@ pub fn run_sandboxed(argv: &[String], cwd: &Path, timeout: Duration) -> anyhow::
     for (k, v) in &cache {
         run_env.insert((*k).to_string(), v.clone());
     }
+    // Keep the sandbox consistent with the tool doctor: when the doctor
+    // allowed an old `go` because GOTOOLCHAIN=auto can fetch the required
+    // toolchain (checksum-verified, cached under GOPATH), the build must be
+    // able to actually do it. When the doctor blocked (missing tool,
+    // GOTOOLCHAIN=local), we never reach the build at all.
+    run_env.insert("GOTOOLCHAIN".to_string(), "auto".into());
     precreate_cache_dirs(cwd, &cache);
 
     if !sandbox_enabled() || !which("systemd-run") {

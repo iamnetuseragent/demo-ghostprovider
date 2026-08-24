@@ -1,94 +1,19 @@
-//! System probing: prerequisite checks, network scan, port fingerprinting.
+//! System probing: prerequisite checks and a bare map of occupied ports.
+//!
+//! Privacy policy: this report must stay useless to attackers. No VPN
+//! interface detection, no HTTP probing of local services — the port table
+//! names only what `ss` itself already shows to the local user.
 
-use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::process::Command;
 use std::time::Duration;
 
-use super::models::{AnalysisResult, InterfaceInfo, ListeningPort, ServiceFingerprint};
-use super::signatures;
+use super::models::{AnalysisResult, InterfaceInfo, ListeningPort};
 
 fn which(bin: &str) -> bool {
     std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).any(|dir| dir.join(bin).is_file()))
         .unwrap_or(false)
-}
-
-/// Try to fingerprint an HTTP service listening on 127.0.0.1:`port`.
-pub fn fingerprint_port(port: u16) -> Option<ServiceFingerprint> {
-    let mut sock = TcpStream::connect(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)).ok()?;
-    sock.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
-    sock.set_write_timeout(Some(Duration::from_secs(3))).ok()?;
-    sock.write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
-        .ok()?;
-
-    let mut buf = vec![0u8; 8192];
-    let n = sock.read(&mut buf).unwrap_or(0);
-    let response = String::from_utf8_lossy(&buf[..n]).into_owned();
-
-    let headers_end = response.find("\r\n\r\n")?;
-    let (headers_raw, body) = response.split_at(headers_end);
-    let body = &body[4..];
-
-    let status_line = headers_raw.lines().next().unwrap_or("").to_string();
-    let server_header = headers_raw
-        .lines()
-        .find(|l| l.to_lowercase().starts_with("server:"))
-        .and_then(|l| l.split_once(':'))
-        .map(|(_, v)| v.trim().to_string())
-        .unwrap_or_default();
-
-    if let Some(sig) = signatures::match_body(body) {
-        return Some(ServiceFingerprint {
-            port,
-            service_type: sig.service_type.into(),
-            service_name: sig.service_name.into(),
-            confidence: sig.confidence,
-            server_header,
-            status_line,
-        });
-    }
-
-    // Fallback: classify by Server header.
-    let lower = server_header.to_lowercase();
-    let known = [
-        "nginx", "apache", "caddy", "iis", "gunicorn", "uvicorn", "node", "express", "python",
-    ];
-    if known.iter().any(|k| lower.contains(k)) && !lower.is_empty() {
-        let name = server_header.split('/').next().unwrap_or("Web server");
-        return Some(ServiceFingerprint {
-            port,
-            service_type: "web_app".into(),
-            service_name: title_case(name),
-            confidence: 60,
-            server_header,
-            status_line,
-        });
-    }
-    if !status_line.starts_with("HTTP/") {
-        return None;
-    }
-    Some(ServiceFingerprint {
-        port,
-        service_type: "web_app".into(),
-        service_name: "Unknown HTTP Service".into(),
-        confidence: 30,
-        server_header,
-        status_line,
-    })
-}
-
-fn title_case(s: &str) -> String {
-    s.split(['-', ' '])
-        .map(|w| {
-            let mut cs = w.chars();
-            match cs.next() {
-                Some(f) => f.to_uppercase().collect::<String>() + cs.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn detect_interfaces() -> Vec<InterfaceInfo> {
@@ -135,6 +60,36 @@ fn ping_ok(host: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Parse one `ss -tlnp4` data row.
+///
+/// For sockets owned by other users (system daemons under root) `ss -p`
+/// prints NO `users:((...))` section at all; the raw line must never leak
+/// into the PROCESS column — such rows get the `(system)` label instead.
+pub fn parse_ss_row(line: &str) -> Option<ListeningPort> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 4 {
+        return None;
+    }
+    let addr_port = parts[3];
+    let (_, port_str) = addr_port.rsplit_once(':')?;
+    let port = port_str.parse().ok()?;
+    let process = if line.contains("users:((\"") {
+        // Rightmost owner wins (sockets can be shared between processes).
+        line.rsplit("users:((\"")
+            .next()
+            .and_then(|r| r.split('"').next())
+            .unwrap_or("(system)")
+            .to_string()
+    } else {
+        "(system)".to_string()
+    };
+    Some(ListeningPort {
+        port,
+        address: addr_port.to_string(),
+        process,
+    })
+}
+
 fn detect_listening_ports() -> Vec<ListeningPort> {
     let Ok(out) = Command::new("ss").args(["-tlnp4"]).output() else {
         return vec![];
@@ -145,33 +100,8 @@ fn detect_listening_ports() -> Vec<ListeningPort> {
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .skip(1)
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 4 {
-                return None;
-            }
-            let addr_port = parts[3];
-            let (_, port_str) = addr_port.rsplit_once(':')?;
-            let port = port_str.parse().ok()?;
-            let process = line
-                .rsplit("users:((\"")
-                .next()
-                .and_then(|r| r.split('"').next())
-                .unwrap_or("")
-                .to_string();
-            Some(ListeningPort {
-                port,
-                address: addr_port.to_string(),
-                process,
-            })
-        })
+        .filter_map(parse_ss_row)
         .collect()
-}
-
-fn is_vpn_iface(name: &str) -> bool {
-    ["tun", "tap", "wg", "ppp", "vpn", "virbr"]
-        .iter()
-        .any(|kw| name.to_lowercase().contains(kw))
 }
 
 fn get_gateway() -> String {
@@ -202,16 +132,6 @@ fn get_dns() -> Vec<String> {
 pub fn run_analysis() -> AnalysisResult {
     let interfaces = detect_interfaces();
     let ports = detect_listening_ports();
-    let services = ports
-        .iter()
-        .filter_map(|p| fingerprint_port(p.port))
-        .collect();
-
-    let vpn_interfaces: Vec<String> = interfaces
-        .iter()
-        .filter(|i| is_vpn_iface(&i.name))
-        .map(|i| i.name.clone())
-        .collect();
 
     let localhost_ok = [80u16, 8080].iter().any(|p| {
         TcpStream::connect_timeout(
@@ -233,9 +153,6 @@ pub fn run_analysis() -> AnalysisResult {
             || std::net::ToSocketAddrs::to_socket_addrs(&("github.com", 443)).is_ok(),
         interfaces,
         listening_ports: ports,
-        services,
-        vpn_active: !vpn_interfaces.is_empty(),
-        vpn_interfaces,
         gateway: get_gateway(),
         dns: get_dns(),
         errors: vec![],
@@ -262,4 +179,35 @@ pub fn run_analysis() -> AnalysisResult {
             .push("No network — cannot fetch remote repositories".into());
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ss_row_with_owner_extracts_process() {
+        let line = "LISTEN 0      128        0.0.0.0:5222       0.0.0.0:*    users:((\"socat\",pid=1234,fd=5))";
+        let p = parse_ss_row(line).expect("parses");
+        assert_eq!(p.port, 5222);
+        assert_eq!(p.process, "socat");
+        assert_eq!(p.address, "0.0.0.0:5222");
+    }
+
+    /// Sockets owned by other users have no users:(()) section; the raw line
+    /// must never leak into the PROCESS column.
+    #[test]
+    fn ss_row_without_owner_is_labeled_system() {
+        let line = "LISTEN 0      200        127.0.0.1:5432       0.0.0.0:*";
+        let p = parse_ss_row(line).expect("parses");
+        assert_eq!(p.port, 5432);
+        assert_eq!(p.process, "(system)");
+    }
+
+    #[test]
+    fn ss_row_garbage_is_rejected() {
+        assert!(parse_ss_row("").is_none());
+        assert!(parse_ss_row("State Recv-Q Send-Q").is_none());
+        assert!(parse_ss_row("LISTEN 0 0 notaport 0.0.0.0:*").is_none());
+    }
 }

@@ -1,5 +1,4 @@
-//! Local system analysis: listening ports, interfaces, fingerprints.
+//! Local system analysis: prerequisite checks, interfaces, occupied ports.
 
 pub mod models;
 pub mod probe;
-pub mod signatures;
