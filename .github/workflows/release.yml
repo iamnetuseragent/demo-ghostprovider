@@ -35,6 +35,10 @@ jobs:
       image: ghcr.io/archlinux/archlinux@sha256:f0e768f473fdef45e43f0d33edd2138bd6f72fd59039f202870a5ed9367497e5
     env:
       VERSION: ${{ github.ref_name }}
+      # Fixed build locations, identical to scripts/release-local.sh: rustc
+      # embeds absolute paths (registry sources, crate root) into the binary,
+      # so /cargo + /src are what makes local and CI builds byte-identical.
+      CARGO_HOME: /cargo
     steps:
       - name: Install pinned toolchain
         run: |
@@ -50,13 +54,16 @@ jobs:
       - name: Build (--locked, static)
         run: |
           set -eu
+          mkdir -p /cargo /src
+          cp -a . /src
+          cd /src
           cargo build --release --locked --target x86_64-unknown-linux-musl
 
       - name: Stage artifacts
         run: |
           set -eu
           mkdir -p dist
-          cp "target/x86_64-unknown-linux-musl/release/${BIN}" \
+          cp "/src/target/x86_64-unknown-linux-musl/release/${BIN}" \
              "dist/${BIN}-${VERSION}-x86_64-linux-musl"
           ( cd dist && sha256sum "${BIN}-${VERSION}-x86_64-linux-musl" > SHA256SUMS )
 

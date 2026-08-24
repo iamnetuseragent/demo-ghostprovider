@@ -1,6 +1,7 @@
-# Release determinism: link every target with the rustup-bundled lld
-# instead of the distro assembler/linker, whose byte output drifts with
-# pacman mirror state. Combined with rust-toolchain.toml this makes
-# builds depend only on the source tree + Cargo.lock + toolchain pin.
+# Link with the toolchain-bundled lld instead of the distro linker:
+# immune to binutils/gcc drift between pacman mirror states, which is
+# what made local and CI binaries diverge byte-wise. Pair with the
+# fixed build locations (/cargo, /src) enforced by scripts/release-local.sh
+# and .github/workflows/release.yml.
 [target.x86_64-unknown-linux-musl]
 linker = "rust-lld"
