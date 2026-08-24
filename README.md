@@ -34,6 +34,16 @@ GhostProvider uses systemd user-level services because they provide:
 
 This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux distributions.
 
+### Distribution trust model
+
+- The demo ships only from this repository (GitHub + Codeberg mirror); release
+  artifacts are minisign-signed with the identity documented in
+  [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) (`docs/release.pub`).
+- The full version never uses download-token URLs. It is distributed via
+  Codeberg collaborator invites to a private repository, cloned with the
+  buyer's own credentials, and installed only after signature verification —
+  same discipline, same key.
+
 ## Security Model
 
 - **All data stays local** — no telemetry. Outbound requests are locked to a compiled-in allowlist (`api.github.com`, `github.com`, `raw.githubusercontent.com`) — every other host is refused by the HTTP client itself, redirects included. Each request is logged to `~/.local/state/demo-ghostprovider/net.log`, and `demo-ghostprovider --show-endpoints` prints the allowlist plus this session's counters so you can verify instead of trust.
