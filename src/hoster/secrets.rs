@@ -15,6 +15,12 @@
 //! Therefore: escape only `\` and `"`; leave `$` and `%` untouched; reject
 //! values containing newlines. (The Python version's `%→%%` doubling was a
 //! real bug that corrupted such secrets.)
+//!
+//! DORMANT IN THE DEMO (by design): all three curated recipes carry no
+//! secrets (`deploy.rs` passes an empty env map), so no EnvironmentFile is
+//! ever written for a demo deployment. The writer stays because it is
+//! regression-tested here against the empirically verified systemd 261
+//! rules above and is the exact code path the full GhostProvider uses.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

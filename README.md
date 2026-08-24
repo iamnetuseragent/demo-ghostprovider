@@ -77,6 +77,12 @@ This is a restricted demo version of GhostProvider that only supports deploying 
 curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/installation/install.sh | bash
 ```
 
+Codeberg mirror (same script, same content):
+
+```bash
+curl -sSL https://codeberg.org/netuser/demo-ghostprovider/raw/branch/main/installation/install.sh | bash
+```
+
 ## Install (Arch Linux)
 
 ```bash

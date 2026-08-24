@@ -9,6 +9,9 @@ license=('custom:Source-Available')
 depends=('systemd' 'git')
 makedepends=('rust' 'cargo')
 # Pinned to the release tag — update pkgver together with the tag.
+# Mirror: https://codeberg.org/netuser/demo-ghostprovider (same tags).
+# makepkg cannot try sources sequentially; swap the URL manually if
+# github.com is unreachable.
 source=("$pkgname-$pkgver.tar.gz::git+https://github.com/iamnetuseragent/demo-ghostprovider.git#tag=v$pkgver")
 sha256sums=('SKIP')
 

@@ -68,7 +68,9 @@ else
 fi
 
 info "=> Building (release profile, ~1 minute)..."
-cargo build --release --manifest-path "$SRC_DIR/Cargo.toml"
+# --locked pins dependency resolution to the committed Cargo.lock: every
+# user of this commit gets byte-identical crate versions from crates.io.
+cargo build --release --locked --manifest-path "$SRC_DIR/Cargo.toml"
 
 install -Dm755 "$SRC_DIR/target/release/$BIN_NAME" "$BIN_DIR/$BIN_NAME"
 

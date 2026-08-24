@@ -291,7 +291,10 @@ pub fn deploy_service(
         recipe.service_name
     ));
 
-    let env_map: BTreeMap<String, String> = BTreeMap::new(); // demo recipes carry no secrets
+    // Demo recipes carry no secrets, so this resolves to Ok(None) and the
+    // unit gets no EnvironmentFile line. The writer itself is live code in
+    // the full version; its escaping rules stay pinned by secrets.rs tests.
+    let env_map: BTreeMap<String, String> = BTreeMap::new();
     let env_file = write_env_file(recipe.service_name, &env_map).ok().flatten();
 
     let spec = UnitSpec {
