@@ -1,13 +1,41 @@
 //! Worker threads for the TUI: scan, deployment, service management.
 
+use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 
 use super::Msg;
 use crate::hoster::deploy;
 
+/// Port → unit name for every URL registered by our deployments. Purely a
+/// local state.json lookup — no probing involved.
+fn deployed_port_map(entries: &[(String, crate::state::ServiceEntry)]) -> HashMap<u16, String> {
+    let mut map = HashMap::new();
+    for (_, entry) in entries {
+        for url in &entry.urls {
+            if let Some((_, port)) = url.rsplit_once(':') {
+                if let Ok(port) = port.parse::<u16>() {
+                    map.insert(port, entry.unit_name.clone());
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Table label for a listening port. Registered deployments win over the raw
+/// process comm name: VERT's static server would otherwise show up as
+/// "demo-ghostprovi", hiding which deployed service owns the port.
+fn process_label(process: &str, port: u16, deployed: &HashMap<u16, String>) -> String {
+    match deployed.get(&port) {
+        Some(unit) => format!("{unit} (deployed)"),
+        None => process.to_string(),
+    }
+}
+
 pub(super) fn spawn_scan(tx: Sender<Msg>) {
     std::thread::spawn(move || {
         let result = crate::analyzer::probe::run_analysis();
+        let deployed = deployed_port_map(&crate::state::list());
         let mut out = String::new();
         let mark = |ok: bool| if ok { "[x]" } else { "[ ]" };
         out.push_str(&format!(
@@ -33,24 +61,16 @@ pub(super) fn spawn_scan(tx: Sender<Msg>) {
         }
         if !result.listening_ports.is_empty() {
             out.push_str("\nListening ports:\n");
-            out.push_str("  PORT   PROCESS              FINGERPRINT\n");
+            // Header built from the same format string as the rows below:
+            // the two can never drift apart.
+            out.push_str(&format!("  {:<6} {}\n", "PORT", "PROCESS"));
             for p in &result.listening_ports {
-                let desc = result
-                    .services
-                    .iter()
-                    .find(|s| s.port == p.port)
-                    .map_or_else(
-                        || "—".to_string(),
-                        |s| format!("{} ({})", s.service_name, s.confidence),
-                    );
-                out.push_str(&format!("  {:<6} {:<20} {}\n", p.port, p.process, desc));
+                out.push_str(&format!(
+                    "  {:<6} {}\n",
+                    p.port,
+                    process_label(&p.process, p.port, &deployed)
+                ));
             }
-        }
-        if !result.vpn_interfaces.is_empty() {
-            out.push_str(&format!(
-                "\nVPN active: {}\n",
-                result.vpn_interfaces.join(", ")
-            ));
         }
         for e in &result.errors {
             out.push_str(&format!("\n! {e}\n"));
@@ -128,5 +148,52 @@ fn systemctl(args: &[&str]) -> anyhow::Result<()> {
         Ok(())
     } else {
         anyhow::bail!("{}", String::from_utf8_lossy(&out.stderr).trim())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::ServiceEntry;
+
+    fn entry(unit: &str, urls: &[&str]) -> (String, ServiceEntry) {
+        (
+            unit.to_string(),
+            ServiceEntry {
+                unit_name: unit.to_string(),
+                project_dir: format!("/tmp/{unit}"),
+                url: "https://example.com/x".into(),
+                urls: urls.iter().map(|s| s.to_string()).collect(),
+            },
+        )
+    }
+
+    #[test]
+    fn port_map_parses_urls_and_skips_garbage() {
+        let entries = vec![
+            entry("demo-vert", &["http://localhost:10748"]),
+            entry(
+                "demo-memos",
+                &["http://localhost:8075", "not-a-url", "ftp://x"],
+            ),
+        ];
+        let map = deployed_port_map(&entries);
+        assert_eq!(map.get(&10748).unwrap(), "demo-vert");
+        assert_eq!(map.get(&8075).unwrap(), "demo-memos");
+        assert!(map.len() == 2);
+    }
+
+    #[test]
+    fn deployed_ports_override_process_name() {
+        let entries = vec![entry("demo-vert", &["http://localhost:10748"])];
+        let map = deployed_port_map(&entries);
+
+        assert_eq!(
+            process_label("demo-ghostprovi", 10748, &map),
+            "demo-vert (deployed)"
+        );
+        // Unrelated port keeps the ss-provided process name.
+        assert_eq!(process_label("tor", 9050, &map), "tor");
+        assert_eq!(process_label("(system)", 5432, &map), "(system)");
     }
 }

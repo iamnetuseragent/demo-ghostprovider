@@ -10,5 +10,6 @@ pub mod preflight;
 pub mod recipes;
 pub mod sandbox;
 pub mod secrets;
+pub mod toolcheck;
 pub mod units;
 pub mod validate;

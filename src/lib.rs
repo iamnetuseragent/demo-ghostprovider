@@ -7,6 +7,7 @@
 pub mod analyzer;
 pub mod hoster;
 pub mod netlog;
+pub mod output;
 pub mod paths;
 pub mod selftest;
 pub mod serve;

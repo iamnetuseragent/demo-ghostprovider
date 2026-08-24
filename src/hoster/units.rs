@@ -113,9 +113,9 @@ pub fn create_unit(spec: &UnitSpec) -> anyhow::Result<()> {
     let working = escape_unit_value(&spec.working_dir.to_string_lossy());
     let content = format!(
         "[Unit]\nDescription={desc}\nAfter=network.target\n\n\
-         [Service]\nType=simple\nWorkingDirectory={working}\nExecStart={exec}\n\
-         Restart=on-failure\nRestartSec=5\n{env_lines}{env_file_line}\n\
-         # -- Privacy & Security Hardening --\n\
+          [Service]\nType=simple\nWorkingDirectory={working}\nExecStart={exec}\n\
+          Restart=always\nRestartSec=5\n{env_lines}{env_file_line}\n\
+          # -- Privacy & Security Hardening --\n\
          NoNewPrivileges=yes\nProtectHome=read-only\nProtectSystem=full\n\
          ReadWritePaths={working}\nEnvironment=\"XDG_CACHE_HOME={working}/.ghost-cache\"\n\
          ProtectKernelTunables=yes\nProtectKernelModules=yes\nProtectControlGroups=yes\n\

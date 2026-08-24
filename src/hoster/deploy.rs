@@ -232,6 +232,24 @@ pub fn deploy_service(
         return result;
     };
 
+    // ── tool doctor: manifest requirements vs installed tools ──
+    let findings = super::toolcheck::check_findings(&project_dir, recipe.display_name);
+    let blockers: Vec<_> = findings.iter().filter(|f| f.blocking).collect();
+    for f in &findings {
+        if f.blocking {
+            emit(&format!("! {}", f.text));
+            result.errors.push(f.text.clone());
+        } else {
+            // Informational (e.g. GOTOOLCHAIN=auto covers an old Go): no "!",
+            // deployment continues.
+            emit(&f.text);
+        }
+    }
+    if !blockers.is_empty() {
+        emit("! fix the tools above, then re-run the deployment");
+        return result;
+    }
+
     // ── build ──
     for step in recipe.pre_build.iter().chain(recipe.build_steps.iter()) {
         emit(&format!("build: {}", short_cmd(step)));
@@ -252,6 +270,10 @@ pub fn deploy_service(
     }
 
     // ── install ──
+    // Stop the previous instance BEFORE picking a port: a still-running old
+    // unit holds the port and would push every redeploy one port up, silently
+    // breaking the previously announced URL.
+    stop_existing(recipe.service_name);
     let port = match find_free_port(recipe.port, 50) {
         Ok(p) => p,
         Err(e) => {
@@ -268,7 +290,6 @@ pub fn deploy_service(
         "installing systemd unit {}...",
         recipe.service_name
     ));
-    stop_existing(recipe.service_name);
 
     let env_map: BTreeMap<String, String> = BTreeMap::new(); // demo recipes carry no secrets
     let env_file = write_env_file(recipe.service_name, &env_map).ok().flatten();

@@ -136,23 +136,33 @@ fn event_loop(
             }
         }
 
+        // Self-heal: any stray glyph left by terminal desync (resize races,
+        // tmux quirks, font-width lies) must not outlive ~2s — force a full
+        // repaint periodically instead of trusting cell-diff forever.
+        if app.tick % 25 == 0 {
+            terminal.clear()?;
+        }
         terminal.draw(|f| draw(f, app))?;
         app.tick = app.tick.wrapping_add(1);
 
         if event::poll(Duration::from_millis(80))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    let before = std::mem::discriminant(&app.screen);
-                    match on_key(app, key.code, key.modifiers) {
-                        Flow::Continue => {}
-                        Flow::Exit => return Ok(()),
-                    }
-                    // Screen switched: ratatui's cell-diff would keep glyphs
-                    // from the longer previous screen — force a full repaint.
-                    if std::mem::discriminant(&app.screen) != before {
-                        terminal.clear()?;
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind == KeyEventKind::Press {
+                        let before = std::mem::discriminant(&app.screen);
+                        match on_key(app, key.code, key.modifiers) {
+                            Flow::Continue => {}
+                            Flow::Exit => return Ok(()),
+                        }
+                        // Screen switched: ratatui's cell-diff would keep glyphs
+                        // from the longer previous screen — force a full repaint.
+                        if std::mem::discriminant(&app.screen) != before {
+                            terminal.clear()?;
+                        }
                     }
                 }
+                Event::Resize(_, _) => terminal.clear()?,
+                _ => {}
             }
         }
     }
@@ -363,22 +373,22 @@ fn draw_header(f: &mut ratatui::Frame, area: ratatui::prelude::Rect) {
 fn draw_main_menu(f: &mut ratatui::Frame, area: ratatui::prelude::Rect, selected: usize) {
     let items = [
         (
-            "◉",
+            "@",
             "System Scan",
-            "probe interfaces, ports, fingerprints",
+            "probe interfaces and occupied ports",
             ACCENT,
         ),
         (
-            "▲",
+            "^",
             "Deploy Service",
             "deploy one of the three curated services",
             MAGENTA,
         ),
-        ("☰", "My Services", "manage deployed units", OK_GREEN),
+        ("#", "My Services", "manage deployed units", OK_GREEN),
     ];
     let list = List::new(items.iter().enumerate().map(|(i, (icon, t, d, hue))| {
         let sel = i == selected;
-        let marker = if sel { " ▶ " } else { "   " };
+        let marker = if sel { " » " } else { "   " };
         ListItem::new(Line::from(vec![
             Span::styled(
                 marker,
@@ -427,7 +437,7 @@ fn draw_scan(
                 Span::styled(" scanning local system...", Style::default().fg(DIM)),
             ]));
             lines.push(Line::from(Span::styled(
-                "  (this probes listening ports and fingerprints HTTP services)",
+                "  (this lists interfaces and occupied ports)",
                 Style::default().fg(DIM),
             )));
         }
@@ -528,9 +538,9 @@ fn colorize_scan(report: &str) -> Vec<Line<'static>> {
         } else if trimmed.starts_with("[x]") || trimmed.starts_with("[ ]") {
             let ok = trimmed.starts_with("[x]");
             let (mark, mark_color, rest_color) = if ok {
-                ("✓", OK_GREEN, BODY)
+                ("+", OK_GREEN, BODY)
             } else {
-                ("✗", ERR_RED, DIM)
+                ("x", ERR_RED, DIM)
             };
             out.push(Line::from(vec![
                 Span::raw(" "),
@@ -547,11 +557,6 @@ fn colorize_scan(report: &str) -> Vec<Line<'static>> {
             out.push(Line::from(Span::styled(
                 line.to_string(),
                 Style::default().fg(ERR_RED).add_modifier(Modifier::BOLD),
-            )));
-        } else if trimmed.starts_with("VPN active:") {
-            out.push(Line::from(Span::styled(
-                line.to_string(),
-                Style::default().fg(WARN_YELLOW),
             )));
         } else if trimmed.contains("MISSING")
             || trimmed.contains("not installed")
@@ -605,13 +610,13 @@ fn draw_url_input(
 
     if let Some(e) = error {
         text.push(Line::from(Span::styled(
-            format!(" ✗ {e}"),
+            format!(" x {e}"),
             Style::default().fg(ERR_RED),
         )));
     } else if !buffer.trim().is_empty() {
         let ok = buffer.trim().starts_with("https://");
         let (mark, msg, color) = if ok {
-            ("✓", " looks like a GitHub URL", OK_GREEN)
+            ("+", " looks like a GitHub URL", OK_GREEN)
         } else {
             (
                 "△",
@@ -660,7 +665,29 @@ fn draw_deploy(
         Constraint::Length(done.map_or(0, |_| 1)),
     ])
     .split(area);
-    let spans: Vec<Line> = lines.iter().map(|l| log_line(l)).collect();
+    let mut spans: Vec<Line> = Vec::new();
+    let mut prev_doctor = false;
+    for l in lines {
+        let t = l.trim_start();
+        let is_doctor = t.starts_with("! ") && doctor_body_markers(t);
+        if is_doctor && !prev_doctor {
+            if !spans.is_empty() {
+                spans.push(Line::from(""));
+            }
+            spans.push(Line::from(vec![
+                Span::styled(" ──", Style::default().fg(DIM)),
+                Span::styled(
+                    " TOOL DOCTOR ",
+                    Style::default()
+                        .fg(WARN_YELLOW)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("────────────────", Style::default().fg(DIM)),
+            ]));
+        }
+        spans.extend(log_lines(l));
+        prev_doctor = is_doctor;
+    }
     f.render_widget(
         Paragraph::new(spans)
             .wrap(Wrap { trim: false })
@@ -687,19 +714,33 @@ fn draw_deploy(
     }
 }
 
-/// Colorize one deployment log line by its shape.
-fn log_line(line: &str) -> Line<'static> {
+/// Colorize one deployment log line; tool-doctor issues get structured
+/// multi-line treatment (problem / fix command / note).
+fn log_lines(line: &str) -> Vec<Line<'static>> {
     let s = line.trim_start();
-    let style = if s.starts_with('!') || s.contains("failed") || s.contains("ERROR") {
-        Style::default().fg(ERR_RED)
-    } else if let Some(url) = s.strip_prefix("listening on ") {
-        return Line::from(vec![
+    if let Some(body) = s.strip_prefix("! ") {
+        if doctor_body_markers(s) {
+            return doctor_lines(body).expect("doctor marker verified above");
+        }
+        return vec![Line::from(vec![
+            Span::styled(
+                " ✖ ".to_string(),
+                Style::default().fg(ERR_RED).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(body.to_string(), Style::default().fg(ERR_RED)),
+        ])];
+    }
+    if let Some(url) = s.strip_prefix("listening on ") {
+        return vec![Line::from(vec![
             Span::styled(" ✔ listening on ", Style::default().fg(OK_GREEN)),
             Span::styled(
                 url.to_string(),
                 Style::default().fg(OK_GREEN).add_modifier(Modifier::BOLD),
             ),
-        ]);
+        ])];
+    }
+    let style = if s.contains("failed") || s.contains("ERROR") {
+        Style::default().fg(ERR_RED)
     } else if s.ends_with("...") {
         Style::default().fg(WARN_YELLOW)
     } else if s.starts_with("=>") {
@@ -707,7 +748,41 @@ fn log_line(line: &str) -> Line<'static> {
     } else {
         Style::default().fg(BODY)
     };
-    Line::from(Span::styled(format!(" {line}"), style))
+    vec![Line::from(Span::styled(format!(" {line}"), style))]
+}
+
+/// A doctor issue carries a problem statement plus an explicit fix command.
+fn doctor_body_markers(s: &str) -> bool {
+    crate::hoster::toolcheck::is_issue_line(s)
+}
+
+fn doctor_lines(body: &str) -> Option<Vec<Line<'static>>> {
+    let (problem, cmd, note) = crate::hoster::toolcheck::split_issue(body)?;
+    let mut out = vec![
+        Line::from(vec![
+            Span::styled(
+                " ! ".to_string(),
+                Style::default()
+                    .fg(WARN_YELLOW)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(problem.to_string(), Style::default().fg(ERR_RED)),
+        ]),
+        Line::from(vec![
+            Span::styled("   fix » ".to_string(), Style::default().fg(DIM)),
+            Span::styled(
+                cmd.to_string(),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ];
+    if let Some(n) = note {
+        out.push(Line::from(vec![
+            Span::styled("      ".to_string(), Style::default().fg(DIM)),
+            Span::styled(n.to_string(), Style::default().fg(DIM)),
+        ]));
+    }
+    Some(out)
 }
 
 // --- my services ------------------------------------------------------------
@@ -782,7 +857,7 @@ fn draw_services(
             };
             ListItem::new(Line::from(vec![
                 Span::styled(
-                    if sel { " ▶ " } else { "   " },
+                    if sel { " » " } else { "   " },
                     Style::default().fg(ACCENT).add_modifier(if sel {
                         Modifier::BOLD
                     } else {
@@ -862,4 +937,39 @@ fn block(title: &str, color: Color) -> Block<'_> {
             format!(" {title} "),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doctor_line_is_split_into_problem_fix_note() {
+        let src = "! Memos needs Go >= 1.27.0, found 1.26.6 — update first: sudo pacman -S --needed go  (this software never runs sudo commands by itself)";
+        let body = src.trim_start().strip_prefix("! ").unwrap();
+        let lines = doctor_lines(body).unwrap();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[1].spans.iter().any(|s| s.content.contains("fix » ")));
+        assert!(
+            lines[1]
+                .spans
+                .iter()
+                .any(|s| s.content == "sudo pacman -S --needed go")
+        );
+        assert!(lines[2].spans.iter().any(|s| s.content.starts_with('(')));
+    }
+
+    #[test]
+    fn doctor_line_without_note_has_two_rows() {
+        let lines = doctor_lines("VERT needs Bun >= 1.2.0 but 'bun' is not installed — install: curl -fsSL https://bun.sh/install | bash").unwrap();
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn marker_detection_matches_only_doctor_issues() {
+        assert!(doctor_body_markers(
+            "! X needs Go >= 1.27.0 — update first: cmd"
+        ));
+        assert!(!doctor_body_markers("! invalid GitHub URL format"));
+    }
 }
