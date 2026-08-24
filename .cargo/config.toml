@@ -1,0 +1,6 @@
+# Release determinism: link every target with the rustup-bundled lld
+# instead of the distro assembler/linker, whose byte output drifts with
+# pacman mirror state. Combined with rust-toolchain.toml this makes
+# builds depend only on the source tree + Cargo.lock + toolchain pin.
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"

@@ -40,7 +40,9 @@ jobs:
         run: |
           set -eu
           pacman -Syu --noconfirm --needed git rustup musl minisign
-          rustup default stable
+          # Pinned, not `stable`: byte-identical releases require the same
+          # rustc here and in scripts/release-local.sh. Bump both together.
+          rustup default 1.98.0
           rustup target add x86_64-unknown-linux-musl
 
       - uses: actions/checkout@v4

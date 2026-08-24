@@ -81,50 +81,38 @@ This is a restricted demo version of GhostProvider that only supports deploying 
 - **SearXNG** - https://github.com/searxng/searxng
 - **Memos** - https://github.com/usememos/memos
 
-## Quick Start (Linux)
+## Install
+
+One line — static binary, verified, ready to run:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/installation/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh
 ```
 
-Codeberg mirror (same script, same content):
+The script picks the latest tagged release, checks sha256, verifies the
+minisign signature (key fingerprint `3673A05B26E03D3E`, see
+[docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)) and installs into
+`~/.local/bin`. Nothing else touches your system.
+
+Options:
 
 ```bash
-curl -sSL https://codeberg.org/netuser/demo-ghostprovider/raw/branch/main/installation/install.sh | bash
+... | sh -s -- --tag v0.0.13        # pin a version
+... | sh -s -- --mirror codeberg    # prefer the Codeberg mirror
+... | sh -s -- --uninstall          # remove the binary
 ```
-
-## Install (static binary)
-
-Every tagged release ships a statically-linked x86_64 musl binary — no
-rustup, no crates.io, nothing compiled on your machine. Surface of trust:
-one file plus one signature.
-
-Download from [GitHub Releases](https://github.com/iamnetuseragent/demo-ghostprovider/releases)
-or the [Codeberg mirror releases](https://codeberg.org/netuser/demo-ghostprovider/releases):
-
-```bash
-ver=v0.0.13   # latest tag
-curl -fsSLO "https://github.com/iamnetuseragent/demo-ghostprovider/releases/download/${ver}/SHA256SUMS"
-curl -fsSLO "https://github.com/iamnetuseragent/demo-ghostprovider/releases/download/${ver}/SHA256SUMS.minisig"
-curl -fsSLO "https://github.com/iamnetuseragent/demo-ghostprovider/releases/download/${ver}/demo-ghostprovider-${ver}-x86_64-linux-musl"
-
-# Verify signature against the in-tree public key, then the checksum:
-minisign -Vm SHA256SUMS -p docs/release.pub
-sha256sum -c SHA256SUMS
-
-install -Dm755 "demo-ghostprovider-${ver}-x86_64-linux-musl" ~/.local/bin/demo-ghostprovider
-```
-
-The release key fingerprint is published in `docs/DISTRIBUTION.md`.
-Source builds (`install.sh`, `makepkg`) remain fully supported.
 
 ## Install (Arch Linux)
+
+Build from source with pacman managing the files:
 
 ```bash
 git clone https://github.com/iamnetuseragent/demo-ghostprovider.git
 cd demo-ghostprovider
 makepkg -si
 ```
+
+Remove later with `pacman -R demo-ghostprovider`.
 
 ## Usage
 
@@ -134,10 +122,15 @@ demo-ghostprovider
 
 ## Uninstall
 
+Static-binary install:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh -s -- --uninstall
+```
+
+Source install (`installation/install.sh`) — full cleanup, including all
+deployed service data:
+
 ```bash
 curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/installation/uninstall.sh | bash
 ```
-
-This stops and removes all `demo-*` systemd units, the launcher binary, the installation directory with all deployed service data, and the state directory (including per-service secrets).
-
-> Installed via `makepkg -si`? The script only cleans its own paths (`~/.local/bin`, data dirs) — remove the pacman copy with `pacman -R demo-ghostprovider`.
