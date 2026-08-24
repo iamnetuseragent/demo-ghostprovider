@@ -1,0 +1,87 @@
+# Static musl release build, triggered by pushing a `v*` tag.
+#
+# Supply-chain discipline mirrors scripts/build-musl.sh:
+#   * the build happens inside the SAME pinned-by-digest Arch container,
+#   * dependencies resolve strictly against the committed Cargo.lock,
+#   * checksums are signed with minisign; the public key lives in-tree at
+#     docs/release.pub so verification never depends on this repository.
+#
+# Required repository secrets (maintainer, one-time setup):
+#   MINISIGN_SECRET_KEY — contents of the release secret key file
+#                         (unencrypted variant recommended: `minisign -C -W`)
+#   MINISIGN_PASSWORD   — its password (empty string for a -W key)
+# Until the secrets exist the workflow still publishes artifacts, marked
+# UNSIGNED via a job warning — never ship such a release silently.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  BIN: demo-ghostprovider
+
+jobs:
+  static-musl:
+    runs-on: ubuntu-latest
+    container:
+      # Pinned by digest — identical to scripts/build-musl.sh and
+      # scripts/release-local.sh. Bump all three together, consciously,
+      # and record the bump in the commit message.
+      image: ghcr.io/archlinux/archlinux@sha256:f0e768f473fdef45e43f0d33edd2138bd6f72fd59039f202870a5ed9367497e5
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - name: Install pinned toolchain
+        run: |
+          set -eu
+          pacman -Syu --noconfirm --needed git rustup musl minisign
+          rustup default stable
+          rustup target add x86_64-unknown-linux-musl
+
+      - uses: actions/checkout@v4
+
+      - name: Build (--locked, static)
+        run: |
+          set -eu
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Stage artifacts
+        run: |
+          set -eu
+          mkdir -p dist
+          cp "target/x86_64-unknown-linux-musl/release/${BIN}" \
+             "dist/${BIN}-${VERSION}-x86_64-linux-musl"
+          ( cd dist && sha256sum "${BIN}-${VERSION}-x86_64-linux-musl" > SHA256SUMS )
+
+      - name: Sign checksums (minisign)
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          set -eu
+          if [ -z "${MINISIGN_SECRET_KEY}" ]; then
+            echo "::warning::MINISIGN_SECRET_KEY is not configured — publishing UNSIGNED artifacts."
+            exit 0
+          fi
+          umask 077
+          printf '%s\n' "${MINISIGN_SECRET_KEY}" > release.key
+          printf '%s\n' "${MINISIGN_PASSWORD}" > release.pw
+          # minisign reads the passphrase from stdin when no tty is attached;
+          # an empty line satisfies an unencrypted (-W) key as well.
+          minisign -Sm "dist/SHA256SUMS" -s release.key < release.pw
+          rm -f release.key release.pw
+          echo "signed:"; cat "dist/SHA256SUMS.minisig"
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          files: |
+            dist/${{ env.BIN }}-${{ github.ref_name }}-x86_64-linux-musl
+            dist/SHA256SUMS
+            dist/SHA256SUMS.minisig

@@ -83,6 +83,31 @@ Codeberg mirror (same script, same content):
 curl -sSL https://codeberg.org/netuser/demo-ghostprovider/raw/branch/main/installation/install.sh | bash
 ```
 
+## Install (static binary)
+
+Every tagged release ships a statically-linked x86_64 musl binary — no
+rustup, no crates.io, nothing compiled on your machine. Surface of trust:
+one file plus one signature.
+
+Download from [GitHub Releases](https://github.com/iamnetuseragent/demo-ghostprovider/releases)
+or the [Codeberg mirror releases](https://codeberg.org/netuser/demo-ghostprovider/releases):
+
+```bash
+ver=v0.0.13   # latest tag
+curl -fsSLO "https://github.com/iamnetuseragent/demo-ghostprovider/releases/download/${ver}/SHA256SUMS"
+curl -fsSLO "https://github.com/iamnetuseragent/demo-ghostprovider/releases/download/${ver}/SHA256SUMS.minisig"
+curl -fsSLO "https://github.com/iamnetuseragent/demo-ghostprovider/releases/download/${ver}/demo-ghostprovider-${ver}-x86_64-linux-musl"
+
+# Verify signature against the in-tree public key, then the checksum:
+minisign -Vm SHA256SUMS -p docs/release.pub
+sha256sum -c SHA256SUMS
+
+install -Dm755 "demo-ghostprovider-${ver}-x86_64-linux-musl" ~/.local/bin/demo-ghostprovider
+```
+
+The release key fingerprint is published in `docs/DISTRIBUTION.md`.
+Source builds (`install.sh`, `makepkg`) remain fully supported.
+
 ## Install (Arch Linux)
 
 ```bash
