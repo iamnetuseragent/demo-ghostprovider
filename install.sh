@@ -90,9 +90,15 @@ fetch "SHA256SUMS"     || die "download failed: SHA256SUMS"
 ( cd "$TMP" && sha256sum -c SHA256SUMS ) || die "checksum mismatch — aborting"
 
 if fetch "SHA256SUMS.minisig"; then
-    need minisign
-    ( cd "$TMP" && minisign -Vm SHA256SUMS -P "$RELEASE_PUB" ) \
-        || die "signature verification FAILED — aborting"
+    if command -v minisign >/dev/null; then
+        ( cd "$TMP" && minisign -Vm SHA256SUMS -P "$RELEASE_PUB" ) \
+            || die "signature verification FAILED — aborting"
+    elif command -v rsign >/dev/null; then
+        ( cd "$TMP" && rsign verify -P "$RELEASE_PUB" -x SHA256SUMS.minisig SHA256SUMS ) \
+            || die "signature verification FAILED — aborting"
+    else
+        die "minisig present but neither minisign nor rsign is installed — install one and retry"
+    fi
     ok "minisign signature verified (key $FINGERPRINT)"
 else
     warn "release is UNSIGNED (SHA256SUMS.minisig missing) — verified by checksum only."
