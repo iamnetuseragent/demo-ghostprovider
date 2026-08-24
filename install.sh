@@ -76,9 +76,11 @@ ART="$BIN_NAME-$TAG-x86_64-linux-musl"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-fetch() { # fetch <name> -> 0 when downloaded
-    curl -fsSL -o "$TMP/$1" "$BASE/$1" || curl -fsSL -o "$TMP/$1" \
-        "https://github.com/$REPO_GH/releases/download/$TAG/$1"
+fetch() { # fetch <name> -> 0 when downloaded; quiet: a missing optional
+          # file (e.g. SHA256SUMS.minisig) must not spook the user
+    curl -fsSL -o "$TMP/$1" "$BASE/$1" 2>/dev/null || \
+        curl -fsSL -o "$TMP/$1" \
+        "https://github.com/$REPO_GH/releases/download/$TAG/$1" 2>/dev/null
 }
 
 log "downloading $TAG..."
