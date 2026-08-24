@@ -23,16 +23,21 @@ tagged releases.
 
 ## What a buyer receives
 
-After payment, the bot sends **one message** containing:
+After payment the sales bot (`botpay`) runs a short dialogue:
 
-1. An **invite link** to collaborate on the private repository
-   <https://codeberg.org/netuser/ghostprovider>.
-2. A **card** stating exactly what will be installed:
-   - repository path and current release tag (`vX.Y.Z`);
-   - commit hash the tag points to;
-   - SHA256 of `SHA256SUMS`;
-   - the release signing key fingerprint;
-   - a plain-language list of installer actions (clone, verify, build, install unit).
+1. It asks for the buyer's **codeberg.org username** (charset-validated,
+   checked against the Forgejo API).
+2. It adds that account as a **read-only collaborator** of the private
+   repository <https://codeberg.org/netuser/ghostprovider> through the
+   Forgejo API. The invitation appears in the buyer's own Codeberg UI;
+   no clickable token-link exists at any point.
+3. It sends an **access card** stating exactly what will be installed:
+   - repository path and latest release tag (`vX.Y.Z`) + commit it points
+     to (or an explicit "no release yet" notice);
+   - SHA256 checksums live on the release page next to `SHA256SUMS.minisig`;
+   - the release signing key fingerprint and the verify commands;
+   - a plain-language list of installer actions (clone, verify, build, install unit)
+     and a pointer to this document.
 
 The user accepts the invite **under their own Codeberg account** and
 clones over HTTPS **with their own credentials**. No author-side token
@@ -96,6 +101,6 @@ installer contract keeps runtime behavior auditable against the demo).
 |---|---|
 | Private repo `netuser/ghostprovider` | done |
 | Protected `v*` tags | done |
-| Release signing keys | pending — `scripts/keygen-release.sh`, then fill fingerprint above |
+| Release signing keys | done — `docs/release.pub`, fingerprint above |
 | First signed tag in the private repo | pending |
-| Bot rework: invite + card instead of token URL | pending |
+| Bot rework: username + Forgejo invite + card (`botpay`) | done |
