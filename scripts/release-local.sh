@@ -34,7 +34,9 @@ podman run --rm \
     "$IMAGE" sh -c '
         set -eu
         pacman -Sy --noconfirm --needed rustup musl >/dev/null
-        rustup default stable >/dev/null 2>&1
+        # Pinned, not `stable`: must match .github/workflows/release.yml
+        # byte-for-byte. Bump both together.
+        rustup default 1.98.0 >/dev/null 2>&1
         rustup target add x86_64-unknown-linux-musl >/dev/null 2>&1
         cargo build --release --locked --target x86_64-unknown-linux-musl
     '
