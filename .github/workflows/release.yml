@@ -80,8 +80,8 @@ jobs:
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
+          # dist/* = binary + SHA256SUMS (+ .minisig once signing secrets
+          # are configured); keeps fail_on_unmatched_files meaningful in
+          # both signed and UNSIGNED mode.
           fail_on_unmatched_files: true
-          files: |
-            dist/${{ env.BIN }}-${{ github.ref_name }}-x86_64-linux-musl
-            dist/SHA256SUMS
-            dist/SHA256SUMS.minisig
+          files: dist/*
