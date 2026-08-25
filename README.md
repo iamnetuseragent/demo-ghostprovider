@@ -9,7 +9,7 @@
 Paste a GitHub URL — deploy one of the three supported services as a systemd service.
 Private, local, no third parties.
 
-![Demo GhostProvider](assets/demo-ghostprovider.png)
+<video src="assets/demo-experience.mp4" controls loop muted playsinline></video>
 
 ## Requirements
 
