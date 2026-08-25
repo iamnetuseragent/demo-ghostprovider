@@ -13,9 +13,8 @@ Private, local, no third parties.
 
 ## Requirements
 
-- Rust toolchain via [rustup](https://rustup.rs) (the installer builds from source)
-- systemd (user-level)
-- git
+- SystemD (user-level)
+- GIT
 - Linux (tested on Arch, Ubuntu, Fedora)
 
 ## Tech Stack
@@ -88,11 +87,6 @@ One line — static binary, verified, ready to run:
 ```bash
 curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh
 ```
-
-The script picks the latest tagged release, checks sha256, verifies the
-minisign signature (key fingerprint `3673A05B26E03D3E`, see
-[docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)) and installs into
-`~/.local/bin`. Nothing else touches your system.
 
 Options:
 
