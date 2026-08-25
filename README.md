@@ -97,7 +97,7 @@ minisign signature (key fingerprint `3673A05B26E03D3E`, see
 Options:
 
 ```bash
-... | sh -s -- --tag v0.0.13        # pin a version
+... | sh -s -- --tag v0.0.14        # pin a version
 ... | sh -s -- --mirror codeberg    # prefer the Codeberg mirror
 ... | sh -s -- --uninstall          # remove the binary
 ```

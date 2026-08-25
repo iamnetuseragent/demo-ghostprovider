@@ -22,21 +22,33 @@ fn deployed_port_map(entries: &[(String, crate::state::ServiceEntry)]) -> HashMa
     map
 }
 
-/// Table label for a listening port. Registered deployments win over the raw
-/// process comm name: VERT's static server would otherwise show up as
-/// "demo-ghostprovi", hiding which deployed service owns the port.
-fn process_label(process: &str, port: u16, deployed: &HashMap<u16, String>) -> String {
-    match deployed.get(&port) {
-        Some(unit) => format!("{unit} (deployed)"),
-        None => process.to_string(),
-    }
+/// Every live listener, sorted and deduplicated. A port gets `Some(unit)`
+/// when it belongs to one of our deployments (local state.json lookup);
+/// foreign listeners stay anonymous — `None`, no owner ever attributed.
+fn port_rows_from(
+    listening: &[u16],
+    deployed: &HashMap<u16, String>,
+) -> Vec<(u16, Option<String>)> {
+    let mut ports: Vec<u16> = listening.to_vec();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+        .into_iter()
+        .map(|port| (port, deployed.get(&port).cloned()))
+        .collect()
 }
 
-pub(super) fn spawn_scan(tx: Sender<Msg>) {
+pub(super) fn spawn_scan(tx: Sender<Msg>, seq: u64) {
     std::thread::spawn(move || {
+        let started = std::time::SystemTime::now();
         let result = crate::analyzer::probe::run_analysis();
         let deployed = deployed_port_map(&crate::state::list());
         let mut out = String::new();
+        // Freshness marker: makes it obvious the report is from THIS run.
+        out.push_str(&format!(
+            "  scanned at {}\n",
+            crate::netlog::format_utc(started)
+        ));
         let mark = |ok: bool| if ok { "[x]" } else { "[ ]" };
         out.push_str(&format!(
             "{} systemd          {}\n{} systemd-nspawn   {}\n{} git              {}\n{} python3 / node   {} / {}\n{} network          {}\n",
@@ -59,23 +71,29 @@ pub(super) fn spawn_scan(tx: Sender<Msg>) {
                 out.push_str(&format!("  {:<14} {:<18} {}\n", i.name, i.ip, i.status));
             }
         }
-        if !result.listening_ports.is_empty() {
-            out.push_str("\nListening ports:\n");
-            // Header built from the same format string as the rows below:
-            // the two can never drift apart.
-            out.push_str(&format!("  {:<6} {}\n", "PORT", "PROCESS"));
-            for p in &result.listening_ports {
-                out.push_str(&format!(
-                    "  {:<6} {}\n",
-                    p.port,
-                    process_label(&p.process, p.port, &deployed)
-                ));
+        // Listening ports: every occupied port is listed, but ownership is
+        // resolved ONLY from local state.json. Ports of our deployments are
+        // labeled with their unit; anything else stays an anonymous
+        // occupied port — never a process name.
+        let live: Vec<u16> = result.listening_ports.iter().map(|p| p.port).collect();
+        let port_rows = port_rows_from(&live, &deployed);
+        // The section is ALWAYS shown: an empty list is information too.
+        out.push_str("\nListening ports:\n");
+        if port_rows.is_empty() {
+            out.push_str("  (none)\n");
+        } else {
+            out.push_str(&format!("  {:<6} {}\n", "PORT", "SERVICE"));
+            for (port, unit) in &port_rows {
+                match unit {
+                    Some(unit) => out.push_str(&format!("  {:<6} {unit} (deployed)\n", port)),
+                    None => out.push_str(&format!("  {port:<6}\n")),
+                }
             }
         }
         for e in &result.errors {
             out.push_str(&format!("\n! {e}\n"));
         }
-        let _ = tx.send(Msg::ScanDone(out));
+        let _ = tx.send(Msg::ScanDone(seq, out));
     });
 }
 
@@ -184,16 +202,27 @@ mod tests {
     }
 
     #[test]
-    fn deployed_ports_override_process_name() {
-        let entries = vec![entry("demo-vert", &["http://localhost:10748"])];
+    fn listening_table_lists_all_ports_but_attributes_only_deployed() {
+        let entries = vec![
+            entry("demo-vert", &["http://localhost:10748"]),
+            entry("demo-memos", &["http://localhost:23920"]),
+        ];
         let map = deployed_port_map(&entries);
 
+        // Every occupied port appears, sorted and deduplicated; foreign
+        // listeners (9050 tor, 5432 postgres) stay anonymous.
+        let rows = port_rows_from(&[23920, 9050, 10748, 5432, 10748], &map);
         assert_eq!(
-            process_label("demo-ghostprovi", 10748, &map),
-            "demo-vert (deployed)"
+            rows,
+            vec![
+                (5432, None),
+                (9050, None),
+                (10748, Some("demo-vert".to_string())),
+                (23920, Some("demo-memos".to_string())),
+            ]
         );
-        // Unrelated port keeps the ss-provided process name.
-        assert_eq!(process_label("tor", 9050, &map), "tor");
-        assert_eq!(process_label("(system)", 5432, &map), "(system)");
+
+        // Nothing listening → empty table.
+        assert!(port_rows_from(&[], &map).is_empty());
     }
 }

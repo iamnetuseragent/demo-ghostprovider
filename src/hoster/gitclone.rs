@@ -53,20 +53,86 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// `remove_dir_all` that survives read-only directories.
+///
+/// Go's module cache extracts archives with mode 0555 directories; deleting
+/// entries inside a directory requires write permission on it, so plain
+/// `fs::remove_dir_all` fails halfway through a project tree containing
+/// `.ghost-cache/go-mod` and leaves an un-removable husk behind. Walk
+/// bottom-up ourselves and add owner-write back before each rmdir.
+pub(crate) fn force_remove_all(path: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.is_dir() {
+        // Writable-parent first: unlinking ANY entry below requires write
+        // permission on this directory, so fix the mode before recursing.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = meta.permissions();
+            if perms.mode() & 0o300 != 0o300 {
+                perms.set_mode(perms.mode() | 0o300); // u+w, u+x
+                std::fs::set_permissions(path, perms)?;
+            }
+        }
+        for entry in std::fs::read_dir(path)? {
+            force_remove_all(&entry?.path())?;
+        }
+        std::fs::remove_dir(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
 pub struct CloneStatus {
     pub ok: bool,
     pub last_message: String,
 }
 
+/// A reusable clone must be intact. An interrupted clone can leave `.git`
+/// with a *partial* checkout: the index lists files that never made it to
+/// disk, every later build fails far away from the real cause ("no required
+/// module provides package …"), and `clone()` happily reports
+/// "already cloned" forever. Deleted-but-tracked files ⇒ corrupt.
+fn worktree_intact(dest: &Path) -> bool {
+    // A real clone has a commit; a tarball-fallback dir only ever gets a
+    // bare `git init`, which must not count as reusable.
+    let committed = Command::new("git")
+        .arg("-C")
+        .arg(dest)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .env_remove("GIT_ASKPASS")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !committed {
+        return false;
+    }
+    let Ok(out) = Command::new("git")
+        .arg("-C")
+        .arg(dest)
+        .args(["ls-files", "--deleted"])
+        .env_remove("GIT_ASKPASS")
+        .output()
+    else {
+        return false;
+    };
+    out.status.success() && String::from_utf8_lossy(&out.stdout).trim().is_empty()
+}
+
 /// Clone `url` into `dest`. Returns immediately when the repo already exists.
 pub fn clone(url: &str, dest: &Path) -> CloneStatus {
     if dest.join(".git").is_dir() {
-        return CloneStatus {
-            ok: true,
-            last_message: "already cloned".into(),
-        };
+        if worktree_intact(dest) {
+            return CloneStatus {
+                ok: true,
+                last_message: "already cloned".into(),
+            };
+        }
+        // Broken checkout: start over instead of failing the build later.
+        eprintln!("clone: existing copy is incomplete — recloning");
+        let _ = force_remove_all(dest);
     }
-    let _ = std::fs::remove_dir_all(dest);
+    let _ = force_remove_all(dest);
 
     let askpass = match write_askpass() {
         Ok(p) => p,
@@ -109,7 +175,7 @@ pub fn clone(url: &str, dest: &Path) -> CloneStatus {
             }
             Some(out) => {
                 let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                let _ = std::fs::remove_dir_all(dest);
+                let _ = force_remove_all(dest);
                 if !err.is_empty() {
                     eprintln!("git error: {}", short(&err));
                 }
@@ -169,7 +235,7 @@ fn tarball_fallback(url: &str, dest: &Path) -> CloneStatus {
                 };
             }
             Ok(_) => {
-                let _ = std::fs::remove_dir_all(dest);
+                let _ = force_remove_all(dest);
                 eprintln!("tarball extract failed");
             }
             Err(_) => {}
@@ -204,4 +270,82 @@ fn uuid() -> u64 {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
         ^ (std::process::id() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(dir: &Path, args: &[&str]) -> bool {
+        Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Reproduces the corrupted-clone scenario: a tracked file that vanished
+    /// from the working tree must mark the clone as not intact.
+    #[test]
+    fn deleted_tracked_file_breaks_intactness() {
+        if !which_git() {
+            return; // git is an install requirement, but don't fail exotic CI
+        }
+        let dir = std::env::temp_dir().join(format!("dgp-intact-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(git(&dir, &["init", "-q"]));
+        std::fs::write(dir.join("go.mod"), "module x\n").unwrap();
+        assert!(git(&dir, &["add", "go.mod"]));
+        assert!(git(&dir, &["commit", "-q", "-m", "init"]));
+
+        // Intact right after checkout.
+        assert!(worktree_intact(&dir));
+
+        // Simulate the interrupted-checkout damage seen in the wild.
+        std::fs::remove_file(dir.join("go.mod")).unwrap();
+        assert!(!worktree_intact(&dir), "deleted tracked file must fail");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_repo_is_not_intact() {
+        let dir = std::env::temp_dir().join(format!("dgp-intact-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!worktree_intact(&dir));
+    }
+
+    /// Go's module cache extracts with mode-0555 directories; plain
+    /// remove_dir_all fails on them, force_remove_all must not.
+    #[test]
+    fn force_remove_handles_readonly_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("dgp-ro-rm-{}", std::process::id()));
+        let ro = dir.join(".ghost-cache/go-mod/pkg/mod/toolchain");
+        std::fs::create_dir_all(&ro).unwrap();
+        std::fs::write(ro.join("go"), "binary").unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Precondition: the std helper really chokes on this layout.
+        assert!(
+            std::fs::remove_dir_all(&dir).is_err(),
+            "0555 dir must block std removal"
+        );
+
+        assert!(force_remove_all(&dir).is_ok());
+        assert!(!dir.exists());
+    }
+
+    fn which_git() -> bool {
+        std::env::var_os("PATH")
+            .map(|p| std::env::split_paths(&p).any(|dir| dir.join("git").is_file()))
+            .unwrap_or(false)
+    }
 }

@@ -99,11 +99,11 @@ pub fn record(host: &str, path: &str, outcome: Result<u16, String>) {
     });
 }
 
-fn humantime_millis(t: SystemTime) -> String {
+/// Compact UTC timestamp without pulling chrono: YYYY-MM-DDTHH:MM:SS.mmmZ
+pub(crate) fn format_utc(t: SystemTime) -> String {
     let d = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
     let secs = d.as_secs();
     let ms = d.subsec_millis();
-    // Compact UTC timestamp without pulling chrono: YYYY-MM-DDTHH:MM:SS.mmmZ
     let days = secs / 86_400;
     let rem = secs % 86_400;
     let (y, m, dd) = civil_from_days(days as i64);
@@ -113,6 +113,10 @@ fn humantime_millis(t: SystemTime) -> String {
         (rem % 3600) / 60,
         rem % 60
     )
+}
+
+fn humantime_millis(t: SystemTime) -> String {
+    format_utc(t)
 }
 
 /// Howard Hinnant's civil-from-days algorithm.

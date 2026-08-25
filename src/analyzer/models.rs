@@ -1,11 +1,14 @@
 //! Analyzer data model.
 
 /// A TCP port found listening on the machine.
+///
+/// No owner attribution here: process names are only ever shown for ports
+/// assigned to services deployed via this panel (see `tui::workers`), which
+/// resolves them from local state.json, never from `ss`.
 #[derive(Debug, Clone)]
 pub struct ListeningPort {
     pub port: u16,
     pub address: String,
-    pub process: String,
 }
 
 #[derive(Debug, Clone)]
@@ -18,8 +21,8 @@ pub struct InterfaceInfo {
 
 /// Full result of the local system analysis.
 ///
-/// Deliberately privacy-minimal: prerequisite tool checks plus a bare map of
-/// occupied ports and their owning processes. No VPN detection and no HTTP
+/// Deliberately privacy-minimal: prerequisite tool checks plus a bare map
+/// of occupied ports. No owner probing, no VPN detection and no HTTP
 /// fingerprinting of local services — this report must stay useless to
 /// anyone but the operator.
 #[derive(Debug, Default)]

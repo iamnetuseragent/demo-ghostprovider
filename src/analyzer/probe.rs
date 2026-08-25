@@ -60,11 +60,11 @@ fn ping_ok(host: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Parse one `ss -tlnp4` data row.
+/// Parse one `ss -tlnp` data row.
 ///
-/// For sockets owned by other users (system daemons under root) `ss -p`
-/// prints NO `users:((...))` section at all; the raw line must never leak
-/// into the PROCESS column — such rows get the `(system)` label instead.
+/// Owner attribution never happens here — a bare port/address pair only.
+/// Which service owns a port is resolved exclusively from local state.json
+/// (deployments made via this panel), never from `ss`.
 pub fn parse_ss_row(line: &str) -> Option<ListeningPort> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 4 {
@@ -73,25 +73,19 @@ pub fn parse_ss_row(line: &str) -> Option<ListeningPort> {
     let addr_port = parts[3];
     let (_, port_str) = addr_port.rsplit_once(':')?;
     let port = port_str.parse().ok()?;
-    let process = if line.contains("users:((\"") {
-        // Rightmost owner wins (sockets can be shared between processes).
-        line.rsplit("users:((\"")
-            .next()
-            .and_then(|r| r.split('"').next())
-            .unwrap_or("(system)")
-            .to_string()
-    } else {
-        "(system)".to_string()
-    };
     Some(ListeningPort {
         port,
         address: addr_port.to_string(),
-        process,
     })
 }
 
+/// All TCP listeners, both address families.
+///
+/// Deployed services frequently bind an IPv6 wildcard (`*:port`, accepting
+/// v4-mapped connections) — filtering with `-4` silently hid exactly the
+/// ports this panel had assigned. No family filter, ever.
 fn detect_listening_ports() -> Vec<ListeningPort> {
-    let Ok(out) = Command::new("ss").args(["-tlnp4"]).output() else {
+    let Ok(out) = Command::new("ss").args(["-tlnp"]).output() else {
         return vec![];
     };
     if !out.status.success() {
@@ -186,22 +180,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ss_row_with_owner_extracts_process() {
+    fn ss_row_parses_bare_port_and_address() {
         let line = "LISTEN 0      128        0.0.0.0:5222       0.0.0.0:*    users:((\"socat\",pid=1234,fd=5))";
         let p = parse_ss_row(line).expect("parses");
         assert_eq!(p.port, 5222);
-        assert_eq!(p.process, "socat");
         assert_eq!(p.address, "0.0.0.0:5222");
     }
 
-    /// Sockets owned by other users have no users:(()) section; the raw line
-    /// must never leak into the PROCESS column.
+    /// Deployed services usually bind an IPv6 wildcard; such rows are the
+    /// whole point of the port table and must parse.
     #[test]
-    fn ss_row_without_owner_is_labeled_system() {
+    fn ss_row_ipv6_wildcard_is_parsed() {
+        let line = "LISTEN 0      4096       *:23920             *:*    users:((\"ghost-server\",pid=692739,fd=9))";
+        let p = parse_ss_row(line).expect("parses");
+        assert_eq!(p.port, 23920);
+        assert_eq!(p.address, "*:23920");
+
+        let bracketed = "LISTEN 0 4096 [::]:8080 [::]:* users:((\"node\",pid=1,fd=7))";
+        let p = parse_ss_row(bracketed).expect("parses");
+        assert_eq!(p.port, 8080);
+    }
+
+    /// Sockets owned by other users parse the same way — no owner data is
+    /// ever recorded for foreign listeners.
+    #[test]
+    fn ss_row_without_owner_still_yields_port() {
         let line = "LISTEN 0      200        127.0.0.1:5432       0.0.0.0:*";
         let p = parse_ss_row(line).expect("parses");
         assert_eq!(p.port, 5432);
-        assert_eq!(p.process, "(system)");
+        assert_eq!(p.address, "127.0.0.1:5432");
     }
 
     #[test]

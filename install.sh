@@ -7,7 +7,7 @@
 # Downloads the latest tagged musl binary, verifies sha256 (always) and
 # the minisign signature (when present), installs into ~/.local/bin.
 #
-# Flags: --uninstall | --tag v0.0.13 | --bin-dir DIR | --mirror codeberg
+# Flags: --uninstall | --tag v0.0.14 | --bin-dir DIR | --mirror codeberg
 set -eu
 
 REPO_GH="iamnetuseragent/demo-ghostprovider"
@@ -64,7 +64,7 @@ if [ -z "$TAG" ]; then
               | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
         HOST="codeberg"
     fi
-    [ -n "$TAG" ] || die "could not resolve latest tag; pass one explicitly: --tag v0.0.13"
+    [ -n "$TAG" ] || die "could not resolve latest tag; pass one explicitly: --tag v0.0.14"
 fi
 
 case "$HOST" in
