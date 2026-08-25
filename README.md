@@ -106,8 +106,6 @@ cd demo-ghostprovider
 makepkg -si
 ```
 
-Remove later with `pacman -R demo-ghostprovider`.
-
 ## Usage
 
 ```bash
