@@ -32,7 +32,7 @@ pub fn find_free_port(start: u16, max_tries: u16) -> anyhow::Result<u16> {
     anyhow::bail!("no free port found in range {start}-{}", start + max_tries)
 }
 
-fn bind_ok(port: u16) -> bool {
+pub(crate) fn bind_ok(port: u16) -> bool {
     let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
     TcpListener::bind(addr).is_ok()
 }

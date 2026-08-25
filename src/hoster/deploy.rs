@@ -36,19 +36,17 @@ pub fn clone_repo(analysis: &RepoAnalysis, work_dir: Option<&Path>) -> Option<Pa
     std::fs::create_dir_all(&base).ok()?;
 
     let dir = base.join(safe_dirname(&analysis.name));
-    if !dir.join(".git").is_dir() {
-        if dir.is_dir() {
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-        let url = format!(
-            "https://github.com/{}/{}.git",
-            analysis.owner, analysis.name
-        );
-        let status = gitclone::clone(&url, &dir);
-        eprintln!("clone: {}", status.last_message);
-        if !status.ok {
-            return None;
-        }
+    // Always delegate to gitclone::clone: it reuses an intact checkout,
+    // reclones a corrupted one (interrupted clones ship a partial worktree
+    // that would fail the build far from the cause) and fetches fresh.
+    let url = format!(
+        "https://github.com/{}/{}.git",
+        analysis.owner, analysis.name
+    );
+    let status = gitclone::clone(&url, &dir);
+    eprintln!("clone: {}", status.last_message);
+    if !status.ok {
+        return None;
     }
     Some(dir)
 }
@@ -380,15 +378,66 @@ fn cleanup_failed(result: &mut HostResult, service: &str) {
         .status();
 }
 
-/// Remove a clone after an aborted deploy.
-pub fn cleanup_clone(clone_path: &str) {
-    let _ = std::fs::remove_dir_all(clone_path);
+/// Wait (best-effort) until `port` on loopback is bindable again after a
+/// service stop, so the next deployment or user app can reuse it.
+fn wait_port_released(port: u16, budget: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if super::port::bind_ok(port) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
-/// Stop, delete the unit and forget the service (used by "My Services").
+/// Wipe a cloned project directory (and the `.ghost-cache` inside it).
+///
+/// Safety guard: only directories that actually live under services_dir are
+/// removed, so a corrupted registry entry can never point the rm at
+/// arbitrary paths. Returns true when the directory was removed.
+fn wipe_project_dir(project_dir: &str) -> bool {
+    let dir = std::path::PathBuf::from(project_dir);
+    let services_base = crate::paths::services_dir();
+    if dir.is_dir() && dir.parent() == Some(services_base.as_path()) {
+        super::gitclone::force_remove_all(&dir).is_ok()
+    } else {
+        false
+    }
+}
+
+/// Stop, delete the unit, wipe the cloned project directory (including the
+/// `.ghost-cache` living inside it), release the announced port and forget
+/// the service. Used by "My Services" → delete.
+///
+/// GhostProvider cleans up the resources it manages; applications may still
+/// leave their own state (databases, external sockets) elsewhere.
 pub fn remove_unit_and_state(service_name: &str) {
+    // Read the registry entry BEFORE unregistering: the port and project dir
+    // we clean up come from it.
+    let entry = crate::state::get(service_name);
+
     remove_unit(service_name);
     super::secrets::remove_env_file(service_name);
+
+    if let Some(e) = entry {
+        // Wipe the clone together with its build caches.
+        wipe_project_dir(&e.project_dir);
+
+        // Free the announced port: systemctl stop is asynchronous from the
+        // listener's point of view; wait briefly for the socket to close.
+        for url in &e.urls {
+            if let Some(port) = url
+                .rsplit_once(':')
+                .and_then(|(_, p)| p.parse::<u16>().ok())
+            {
+                wait_port_released(port, std::time::Duration::from_secs(3));
+            }
+        }
+    }
+
     crate::state::unregister(service_name).ok();
     let _ = Command::new("systemctl")
         .args(["--user", "daemon-reload"])
@@ -401,4 +450,79 @@ fn short(s: &str) -> String {
 
 fn short_cmd(s: &str) -> String {
     s.chars().take(100).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Serializes tests that mutate the process-global XDG_DATA_HOME.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// README promise: deleting a service wipes the clone together with its
+    /// caches — but only inside services_dir.
+    #[test]
+    fn wipe_removes_clone_inside_services_dir_only() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "dgp-wipe-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", &tmp);
+        }
+
+        // 1) A clone inside services_dir is removed, caches included.
+        let base = crate::paths::services_dir();
+        let project = base.join("memos");
+        std::fs::create_dir_all(project.join(".ghost-cache/npm")).unwrap();
+        std::fs::write(project.join("file.txt"), "clone").unwrap();
+
+        assert!(wipe_project_dir(&project.to_string_lossy()));
+        assert!(!project.exists(), "clone must be gone, caches included");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn wipe_refuses_paths_outside_services_dir() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!("dgp-wipe-guard-{}", std::process::id()));
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", &tmp);
+        }
+        let outside = tmp.join("precious");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep.me"), "do not touch").unwrap();
+
+        assert!(!wipe_project_dir(&outside.to_string_lossy()));
+        assert!(outside.exists(), "paths outside services_dir must survive");
+
+        // A bare services_dir itself is not a project clone either.
+        assert!(!wipe_project_dir(tmp.to_string_lossy().as_ref()));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn released_port_is_detected_immediately() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(wait_port_released(port, std::time::Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn occupied_port_times_out() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(!wait_port_released(
+            port,
+            std::time::Duration::from_millis(300)
+        ));
+    }
 }

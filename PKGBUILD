@@ -1,6 +1,6 @@
 # Maintainer: iamnetuseragent
 pkgname=demo-ghostprovider
-pkgver=0.0.13
+pkgver=0.0.14
 pkgrel=1
 pkgdesc="TUI for self-hosting & localhost management"
 arch=('x86_64')

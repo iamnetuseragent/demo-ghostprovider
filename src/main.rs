@@ -88,11 +88,11 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Some("--help" | "-h") => print_help(),
         Some(other) if other.starts_with("--") => {
             eprintln!("unknown option: {other}\nsee --help");
             std::process::exit(2);
         }
-        Some("--help" | "-h") => print_help(),
         _ => {
             demo_ghostprovider::tui::run()?;
         }

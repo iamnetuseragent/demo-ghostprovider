@@ -51,11 +51,22 @@ pub(crate) enum Screen {
     Scan {
         report: Option<String>,
         running: bool,
+        /// Generation of the scan this screen is waiting for. A late
+        /// ScanDone from an abandoned run (user left and re-entered) carries
+        /// a stale seq and is dropped instead of overwriting fresh data.
+        seq: u64,
     },
     UrlInput {
         buffer: String,
         error: Option<String>,
         busy: bool,
+    },
+    /// YES/NO gate before hosting a service (see README "Security model").
+    Confirm {
+        url: String,
+        service_label: String,
+        /// Which button the arrow keys currently highlight.
+        yes_selected: bool,
     },
     Deploy {
         lines: Vec<String>,
@@ -66,11 +77,17 @@ pub(crate) enum Screen {
         selected: usize,
         message: Option<String>,
     },
+    /// YES/NO gate before removing a service (unit, clone, caches).
+    ConfirmDelete {
+        name: String,
+        /// Which button the arrow keys currently highlight (defaults to No).
+        yes_selected: bool,
+    },
 }
 
 pub(crate) enum Msg {
     Log(String),
-    ScanDone(String),
+    ScanDone(u64, String),
     DeployDone(bool),
 }
 
@@ -80,6 +97,8 @@ pub(crate) struct App {
     pub tx: Sender<Msg>,
     /// Drives animations; incremented every loop iteration (~80ms).
     pub tick: u64,
+    /// Incremented on every System Scan request; identifies the run.
+    pub scan_seq: u64,
 }
 
 /// Entry point: sets up the terminal, runs the loop, restores the terminal.
@@ -95,6 +114,7 @@ pub fn run() -> anyhow::Result<()> {
         rx,
         tx,
         tick: 0,
+        scan_seq: 0,
     };
     let res = event_loop(&mut terminal, &mut app);
 
@@ -110,10 +130,17 @@ fn event_loop(
     loop {
         while let Ok(msg) = app.rx.try_recv() {
             match msg {
-                Msg::ScanDone(report) => {
-                    if let Screen::Scan { report: r, running } = &mut app.screen {
-                        *r = Some(report);
-                        *running = false;
+                Msg::ScanDone(seq, report) => {
+                    if let Screen::Scan {
+                        report: r,
+                        running,
+                        seq: cur,
+                    } = &mut app.screen
+                    {
+                        if *cur == seq {
+                            *r = Some(report);
+                            *running = false;
+                        }
                     }
                 }
                 Msg::Log(line) => {
@@ -173,43 +200,84 @@ enum Flow {
     Exit,
 }
 
+/// Positional mapping national-layout → QWERTY for *command* keys only.
+/// Free-text input (the URL field) always receives the raw character.
+const LAYOUT_MAP: &[(char, char)] = &[
+    // Russian ЙЦУКЕН
+    ('й', 'q'),
+    ('ц', 'w'),
+    ('у', 'e'),
+    ('к', 'r'),
+    ('е', 't'),
+    ('н', 'y'),
+    ('г', 'u'),
+    ('ш', 'i'),
+    ('щ', 'o'),
+    ('з', 'p'),
+    ('ф', 'a'),
+    ('ы', 's'),
+    ('в', 'd'),
+    ('а', 'f'),
+    ('п', 'g'),
+    ('р', 'h'),
+    ('о', 'j'),
+    ('л', 'k'),
+    ('д', 'l'),
+    ('я', 'z'),
+    ('ч', 'x'),
+    ('с', 'c'),
+    ('м', 'v'),
+    ('и', 'b'),
+    ('т', 'n'),
+    ('ь', 'm'),
+];
+
+/// Normalize a key event to the QWERTY command letter it represents,
+/// regardless of the active keyboard layout. Uppercase is folded; ASCII
+/// passes through unchanged. Characters without a positional counterpart
+/// (digits, punctuation, unmapped letters) yield None so they never fire
+/// a command by accident.
+fn command_char(key: KeyCode) -> Option<char> {
+    let c = match key {
+        KeyCode::Char(c) => c,
+        _ => return None,
+    };
+    let lower = c.to_lowercase().next().unwrap_or(c);
+    if lower.is_ascii() {
+        return Some(lower);
+    }
+    LAYOUT_MAP
+        .iter()
+        .find(|(nat, _)| *nat == lower)
+        .map(|(_, lat)| *lat)
+}
+
 fn on_key(app: &mut App, key: KeyCode, mods: KeyModifiers) -> Flow {
     if matches!(key, KeyCode::Char('c')) && mods.contains(KeyModifiers::CONTROL) {
         return Flow::Exit;
     }
+    // Main-menu activation touches app.tx and app.screen at once; decide it
+    // before the screen match takes its borrow.
+    if let Screen::Main { selected } = app.screen {
+        if matches!(key, KeyCode::Enter | KeyCode::Char(' ')) {
+            return main_menu_activate(app, selected);
+        }
+    }
+    let cmd = command_char(key);
     match &mut app.screen {
         Screen::Main { selected } => match key {
-            KeyCode::Up | KeyCode::Char('k') => *selected = selected.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1).min(2),
-            KeyCode::Enter | KeyCode::Char(' ') => match selected {
-                0 => {
-                    workers::spawn_scan(app.tx.clone());
-                    app.screen = Screen::Scan {
-                        report: None,
-                        running: true,
-                    };
-                }
-                1 => {
-                    app.screen = Screen::UrlInput {
-                        buffer: String::new(),
-                        error: None,
-                        busy: false,
-                    }
-                }
-                _ => {
-                    let rows = workers::service_rows();
-                    app.screen = Screen::Services {
-                        rows,
-                        selected: 0,
-                        message: None,
-                    };
-                }
+            KeyCode::Up | KeyCode::Down => move_main_selection(selected, key),
+            KeyCode::Enter | KeyCode::Char(' ') => {}
+            KeyCode::Esc => return Flow::Exit,
+            _ => match cmd {
+                Some('k') => *selected = selected.saturating_sub(1),
+                Some('j') => *selected = (*selected + 1).min(2),
+                Some('q') => return Flow::Exit,
+                _ => {}
             },
-            KeyCode::Char('q') | KeyCode::Esc => return Flow::Exit,
-            _ => {}
         },
         Screen::Scan { .. } => {
-            if matches!(key, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+            if matches!(key, KeyCode::Esc | KeyCode::Enter) || cmd == Some('q') {
                 app.screen = Screen::Main { selected: 0 };
             }
         }
@@ -230,20 +298,61 @@ fn on_key(app: &mut App, key: KeyCode, mods: KeyModifiers) -> Flow {
                     if buffer.trim().is_empty() {
                         *error = Some("enter a GitHub URL".into());
                     } else {
-                        workers::start_deployment(app.tx.clone(), buffer.trim().to_string());
-                        app.screen = Screen::Deploy {
-                            lines: vec![format!("deploying {}...", buffer.trim())],
-                            done: None,
+                        let url = buffer.trim().to_string();
+                        let service_label = confirm_label(&url);
+                        app.screen = Screen::Confirm {
+                            url,
+                            service_label,
+                            yes_selected: true,
                         };
                     }
                 }
+                // Raw char: URLs must be typed verbatim on any layout.
                 KeyCode::Char(c) => buffer.push(c),
                 _ => {}
             }
         }
+        Screen::Confirm {
+            url, yes_selected, ..
+        } => {
+            let mut decision: Option<bool> = None;
+            match key {
+                KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                    *yes_selected = !*yes_selected;
+                }
+                KeyCode::Esc => decision = Some(false),
+                // The ONLY committing key: Enter accepts the highlighted choice.
+                KeyCode::Enter => decision = Some(*yes_selected),
+                _ => match cmd {
+                    // Letters only move the highlight; nothing runs without
+                    // an explicit Enter.
+                    Some('y') => *yes_selected = true,
+                    Some('n') => *yes_selected = false,
+                    _ => {}
+                },
+            }
+            match decision {
+                Some(true) => {
+                    workers::start_deployment(app.tx.clone(), url.clone());
+                    app.screen = Screen::Deploy {
+                        lines: vec![format!("deploying {}...", url)],
+                        done: None,
+                    };
+                }
+                // Back to the input with the URL preserved.
+                Some(false) => {
+                    app.screen = Screen::UrlInput {
+                        buffer: url.clone(),
+                        error: None,
+                        busy: false,
+                    }
+                }
+                None => {}
+            }
+        }
         Screen::Deploy { .. } => {
             let finished = matches!(app.screen, Screen::Deploy { done: Some(_), .. });
-            if finished && matches!(key, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
+            if finished && (matches!(key, KeyCode::Enter | KeyCode::Esc) || cmd == Some('q')) {
                 app.screen = Screen::Main { selected: 1 };
             }
         }
@@ -255,32 +364,121 @@ fn on_key(app: &mut App, key: KeyCode, mods: KeyModifiers) -> Flow {
             let _ = message; // status messages surface via refresh below
             let count = rows.len();
             match key {
-                KeyCode::Esc | KeyCode::Char('q') => app.screen = Screen::Main { selected: 2 },
-                KeyCode::Up | KeyCode::Char('k') if count > 0 => {
-                    *selected = selected.saturating_sub(1)
-                }
-                KeyCode::Down | KeyCode::Char('j') if count > 0 => {
-                    *selected = (*selected + 1).min(count - 1);
-                }
-                KeyCode::Char('r') => {
-                    *rows = workers::service_rows();
-                    *message = Some("refreshed".into());
-                }
-                KeyCode::Char('s') | KeyCode::Char('t') | KeyCode::Char('d') if count > 0 => {
-                    if let Some((name, _, _)) = rows.get(*selected) {
-                        let name = name.clone();
-                        let action = match key {
-                            KeyCode::Char('s') => "stop",
-                            KeyCode::Char('t') => "start",
-                            _ => "delete",
-                        };
-                        let msg = workers::service_action(&name, action);
+                KeyCode::Esc => app.screen = Screen::Main { selected: 2 },
+                KeyCode::Up if count > 0 => *selected = selected.saturating_sub(1),
+                KeyCode::Down if count > 0 => *selected = (*selected + 1).min(count - 1),
+                _ => match cmd {
+                    Some('q') => app.screen = Screen::Main { selected: 2 },
+                    Some('k') if count > 0 => *selected = selected.saturating_sub(1),
+                    Some('j') if count > 0 => *selected = (*selected + 1).min(count - 1),
+                    Some('r') => {
                         *rows = workers::service_rows();
-                        *message = Some(msg);
+                        *message = Some("refreshed".into());
                     }
-                }
-                _ => {}
+                    Some(action @ ('s' | 't' | 'd')) if count > 0 => {
+                        if let Some((name, _, _)) = rows.get(*selected) {
+                            let name = name.clone();
+                            match action {
+                                's' => {
+                                    let msg = workers::service_action(&name, "stop");
+                                    *rows = workers::service_rows();
+                                    *message = Some(msg);
+                                }
+                                't' => {
+                                    let msg = workers::service_action(&name, "start");
+                                    *rows = workers::service_rows();
+                                    *message = Some(msg);
+                                }
+                                // Deletion is destructive (unit + clone +
+                                // caches): gate it behind an explicit YES/NO
+                                // that defaults to No.
+                                _ => {
+                                    app.screen = Screen::ConfirmDelete {
+                                        name,
+                                        yes_selected: false,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                },
             }
+        }
+        Screen::ConfirmDelete { name, yes_selected } => {
+            let mut decision: Option<bool> = None;
+            match key {
+                KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                    *yes_selected = !*yes_selected;
+                }
+                KeyCode::Esc => decision = Some(false),
+                // The ONLY committing key: Enter accepts the highlighted choice.
+                KeyCode::Enter => decision = Some(*yes_selected),
+                _ => match cmd {
+                    // Letters only move the highlight; nothing runs without
+                    // an explicit Enter.
+                    Some('y') => *yes_selected = true,
+                    Some('n') => *yes_selected = false,
+                    _ => {}
+                },
+            }
+            match decision {
+                Some(true) => {
+                    let msg = workers::service_action(name, "delete");
+                    let rows = workers::service_rows();
+                    app.screen = Screen::Services {
+                        rows,
+                        selected: 0,
+                        message: Some(msg),
+                    };
+                }
+                Some(false) => {
+                    let rows = workers::service_rows();
+                    app.screen = Screen::Services {
+                        rows,
+                        selected: 0,
+                        message: None,
+                    };
+                }
+                None => {}
+            }
+        }
+    }
+    Flow::Continue
+}
+
+fn move_main_selection(selected: &mut usize, key: KeyCode) {
+    match key {
+        KeyCode::Up => *selected = selected.saturating_sub(1),
+        _ => *selected = (*selected + 1).min(2),
+    }
+}
+
+fn main_menu_activate(app: &mut App, selected: usize) -> Flow {
+    match selected {
+        0 => {
+            workers::spawn_scan(app.tx.clone(), app.scan_seq + 1);
+            app.scan_seq += 1;
+            app.screen = Screen::Scan {
+                report: None,
+                running: true,
+                seq: app.scan_seq,
+            };
+        }
+        1 => {
+            app.screen = Screen::UrlInput {
+                buffer: String::new(),
+                error: None,
+                busy: false,
+            }
+        }
+        _ => {
+            let rows = workers::service_rows();
+            app.screen = Screen::Services {
+                rows,
+                selected: 0,
+                message: None,
+            };
         }
     }
     Flow::Continue
@@ -315,7 +513,9 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         Screen::Main { selected } => {
             draw_main_menu(f, chunks[1], *selected);
         }
-        Screen::Scan { report, running } => {
+        Screen::Scan {
+            report, running, ..
+        } => {
             draw_scan(f, chunks[1], report.as_deref(), *running, app.tick);
         }
         Screen::UrlInput {
@@ -324,6 +524,13 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
             busy,
         } => {
             draw_url_input(f, chunks[1], buffer, error.as_deref(), *busy, app.tick);
+        }
+        Screen::Confirm {
+            url,
+            service_label,
+            yes_selected,
+        } => {
+            draw_confirm(f, chunks[1], url, service_label, *yes_selected);
         }
         Screen::Deploy { lines, done } => {
             draw_deploy(f, chunks[1], lines, *done);
@@ -334,6 +541,9 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
             message,
         } => {
             draw_services(f, chunks[1], rows, *selected, message.as_deref());
+        }
+        Screen::ConfirmDelete { name, yes_selected } => {
+            draw_confirm_delete(f, chunks[1], name, *yes_selected);
         }
     }
 
@@ -466,7 +676,6 @@ fn colorize_scan(report: &str) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let mut in_ports = false;
     let mut in_ifaces = false;
-    let mut zebra = 0usize;
     for raw in report.lines() {
         let line = raw.strip_prefix('\n').unwrap_or(raw);
         let trimmed = line.trim_start();
@@ -474,7 +683,6 @@ fn colorize_scan(report: &str) -> Vec<Line<'static>> {
         if trimmed == "Interfaces:" || trimmed == "Listening ports:" {
             in_ports = trimmed == "Listening ports:";
             in_ifaces = trimmed == "Interfaces:";
-            zebra = 0;
             out.push(Line::from(Span::styled(
                 format!(" {line}"),
                 Style::default().fg(VIOLET).add_modifier(Modifier::BOLD),
@@ -485,23 +693,31 @@ fn colorize_scan(report: &str) -> Vec<Line<'static>> {
                 Style::default().fg(DIM),
             )));
         } else if in_ports && !trimmed.is_empty() {
-            // Zebra striping without background fills — alternate text shades.
-            let body_fg = if zebra % 2 == 1 { BODY_ALT } else { BODY };
-            zebra += 1;
+            // Empty-section placeholder: dim, never styled like a port row.
+            if trimmed == "(none)" {
+                out.push(Line::from(Span::styled(
+                    format!(" {line}"),
+                    Style::default().fg(DIM),
+                )));
+                continue;
+            }
+            // Ports of our own deployments carry the "(deployed)" tag —
+            // yellow bold. Every other row is an anonymous occupied port:
+            // violet bold, with no owner attribution ever.
+            let deployed = trimmed.contains("(deployed)");
+            let hue = if deployed { WARN_YELLOW } else { VIOLET };
             let mut spans = vec![Span::raw(" ")];
-            if let Some((port, rest)) = trimmed.split_once(char::is_whitespace) {
-                spans.push(Span::styled(
-                    port.to_string(),
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                ));
+            let (port, rest) = trimmed
+                .split_once(char::is_whitespace)
+                .unwrap_or((trimmed, ""));
+            spans.push(Span::styled(
+                port.to_string(),
+                Style::default().fg(hue).add_modifier(Modifier::BOLD),
+            ));
+            if !rest.is_empty() {
                 spans.push(Span::styled(
                     format!(" {rest}"),
-                    Style::default().fg(body_fg),
-                ));
-            } else {
-                spans.push(Span::styled(
-                    trimmed.to_string(),
-                    Style::default().fg(body_fg),
+                    Style::default().fg(hue).add_modifier(Modifier::BOLD),
                 ));
             }
             out.push(Line::from(spans));
@@ -639,6 +855,131 @@ fn draw_url_input(
         Paragraph::new(text)
             .wrap(Wrap { trim: false })
             .block(block("Deploy Service", WARN_YELLOW)),
+        area,
+    );
+}
+
+// --- confirmation gates ------------------------------------------------------
+
+/// Human-readable service label for the deploy confirmation screen; falls
+/// back to the raw URL when it does not match a curated recipe.
+fn confirm_label(url: &str) -> String {
+    crate::hoster::github::parse_github_url(url)
+        .and_then(|(owner, name)| {
+            crate::hoster::recipes::find_recipe(&owner, &name).map(|r| r.display_name.to_string())
+        })
+        .unwrap_or_else(|| url.to_string())
+}
+
+/// One selectable YES/NO button; the arrow keys move the highlight.
+fn choice_spans(marker: &str, label: &str, hue: Color, selected: bool) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::raw("   ")];
+    if selected {
+        spans.push(Span::styled(
+            "» ".to_string(),
+            Style::default().fg(hue).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            marker.to_string(),
+            Style::default()
+                .fg(hue)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        ));
+        spans.push(Span::styled(
+            label.to_string(),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(marker.to_string(), Style::default().fg(DIM)));
+        spans.push(Span::styled(
+            label.to_string(),
+            Style::default().fg(BODY_ALT),
+        ));
+    }
+    spans
+}
+
+fn draw_confirm(
+    f: &mut ratatui::Frame,
+    area: ratatui::prelude::Rect,
+    url: &str,
+    service_label: &str,
+    yes_selected: bool,
+) {
+    let text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                " Host ",
+                Style::default()
+                    .fg(WARN_YELLOW)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(service_label.to_string(), Style::default().fg(Color::White)),
+            Span::styled(" on this machine?", Style::default().fg(BODY)),
+        ]),
+        Line::from(vec![
+            Span::styled(" URL: ", Style::default().fg(DIM)),
+            Span::styled(url.to_string(), Style::default().fg(ACCENT)),
+        ]),
+        Line::from(""),
+        Line::from(choice_spans("[Y]es", " — deploy", OK_GREEN, yes_selected)),
+        Line::from(choice_spans(
+            "[N]o",
+            " — cancel",
+            WARN_YELLOW,
+            !yes_selected,
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            " ←→ select · Enter confirm",
+            Style::default().fg(DIM),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .block(block("Confirm Deployment", WARN_YELLOW)),
+        area,
+    );
+}
+
+fn draw_confirm_delete(
+    f: &mut ratatui::Frame,
+    area: ratatui::prelude::Rect,
+    name: &str,
+    yes_selected: bool,
+) {
+    let text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                " Remove ",
+                Style::default().fg(ERR_RED).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(name.to_string(), Style::default().fg(Color::White)),
+            Span::styled("?", Style::default().fg(ERR_RED)),
+        ]),
+        Line::from(Span::styled(
+            " This deletes the unit, the cloned repository and its caches.",
+            Style::default().fg(DIM),
+        )),
+        Line::from(""),
+        Line::from(choice_spans("[Y]es", " — remove", ERR_RED, yes_selected)),
+        Line::from(choice_spans("[N]o", " — keep", OK_GREEN, !yes_selected)),
+        Line::from(""),
+        Line::from(Span::styled(
+            " ←→ select · Enter confirm",
+            Style::default().fg(DIM),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .block(block("Confirm Removal", ERR_RED)),
         area,
     );
 }
@@ -902,6 +1243,18 @@ fn hint_line(screen: &Screen) -> Line<'static> {
                 vec![("Enter deploy", OK_GREEN), ("Esc back", WARN_YELLOW)]
             }
         }
+        Screen::Confirm { .. } => vec![
+            ("←→ select", ACCENT),
+            ("Y/N", OK_GREEN),
+            ("Enter confirm", OK_GREEN),
+            ("Esc cancel", WARN_YELLOW),
+        ],
+        Screen::ConfirmDelete { .. } => vec![
+            ("←→ select", ACCENT),
+            ("Y/N", ERR_RED),
+            ("Enter confirm", OK_GREEN),
+            ("Esc keep", OK_GREEN),
+        ],
         Screen::Deploy { done, .. } => {
             if done.is_some() {
                 vec![("Enter back", MAGENTA)]
@@ -942,6 +1295,114 @@ fn block(title: &str, color: Color) -> Block<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Port rows: our deployments render yellow bold; anonymous occupied
+    /// ports render violet bold — both without any owner data.
+    #[test]
+    fn scan_report_colors_deployed_yellow_and_foreign_violet() {
+        let report = "Listening ports:\n  5432   \n  23920  demo-memos (deployed)\n";
+        let lines = colorize_scan(report);
+
+        // Line layout: header, then one line per port row.
+        let foreign = &lines[1];
+        let deployed = &lines[2];
+
+        assert!(
+            foreign
+                .spans
+                .iter()
+                .skip(1) // leading indent span carries no color
+                .all(
+                    |s| s.style.fg == Some(VIOLET) && s.style.add_modifier.contains(Modifier::BOLD)
+                ),
+            "foreign occupied ports must be violet bold, got {:?}",
+            foreign.spans.iter().map(|s| s.style.fg).collect::<Vec<_>>()
+        );
+        assert!(
+            deployed
+                .spans
+                .iter()
+                .skip(1)
+                .all(|s| s.style.fg == Some(WARN_YELLOW)
+                    && s.style.add_modifier.contains(Modifier::BOLD)),
+            "deployed rows must be yellow bold, got {:?}",
+            deployed
+                .spans
+                .iter()
+                .map(|s| s.style.fg)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn command_char_passes_latin_through_case_insensitive() {
+        assert_eq!(command_char(KeyCode::Char('q')), Some('q'));
+        assert_eq!(command_char(KeyCode::Char('Q')), Some('q'));
+        assert_eq!(command_char(KeyCode::Char('Y')), Some('y'));
+        assert_eq!(command_char(KeyCode::Char('D')), Some('d'));
+        assert_eq!(command_char(KeyCode::Char(' ')), Some(' '));
+        assert_eq!(command_char(KeyCode::Char('1')), Some('1'));
+        // Non-char keys never map to a command letter.
+        assert_eq!(command_char(KeyCode::Enter), None);
+        assert_eq!(command_char(KeyCode::Esc), None);
+    }
+
+    /// Russian ЙЦУКЕН: the same physical keys must trigger the same
+    /// commands as their QWERTY counterparts, upper or lower case.
+    #[test]
+    fn command_char_maps_cyrillic_positionally() {
+        let cases = [
+            ('й', "q"),
+            ('Й', "q"), // quit
+            ('л', "k"),
+            ('Л', "k"), // up (vim-style)
+            ('о', "j"),
+            ('О', "j"), // down (vim-style)
+            ('к', "r"), // refresh
+            ('ы', "s"), // stop
+            ('е', "t"), // start
+            ('в', "d"), // delete
+            ('н', "y"),
+            ('Н', "y"), // yes
+            ('т', "n"),
+            ('Т', "n"), // no
+        ];
+        for (cyr, lat) in cases {
+            assert_eq!(
+                command_char(KeyCode::Char(cyr)),
+                Some(lat.chars().next().unwrap()),
+                "{cyr} must act as {lat}"
+            );
+        }
+    }
+
+    /// Letters without a positional counterpart never fire commands.
+    #[test]
+    fn command_char_leaves_unmapped_chars_alone() {
+        assert_eq!(command_char(KeyCode::Char('б')), None);
+        assert_eq!(command_char(KeyCode::Char('ю')), None);
+        assert_eq!(command_char(KeyCode::Char('ж')), None);
+        assert_eq!(command_char(KeyCode::Char('ё')), None);
+    }
+
+    #[test]
+    fn confirm_label_maps_curated_repos_to_display_names() {
+        assert_eq!(confirm_label("https://github.com/usememos/memos"), "Memos");
+        assert_eq!(confirm_label("https://github.com/VERT-sh/VERT"), "VERT");
+        assert_eq!(
+            confirm_label("https://github.com/searxng/searxng"),
+            "SearXNG"
+        );
+    }
+
+    #[test]
+    fn confirm_label_falls_back_to_raw_url() {
+        assert_eq!(
+            confirm_label("https://github.com/foo/bar"),
+            "https://github.com/foo/bar"
+        );
+        assert_eq!(confirm_label("not a url"), "not a url");
+    }
 
     #[test]
     fn doctor_line_is_split_into_problem_fix_note() {
