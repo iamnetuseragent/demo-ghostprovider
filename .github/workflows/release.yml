@@ -92,6 +92,9 @@ jobs:
           # Publish under the maintainer identity instead of
           # github-actions[bot]; Contents RW on this repo is sufficient.
           token: ${{ secrets.GH_RELEASE_TOKEN }}
+          # Auto-notes from commit history; a curated body in the tag's
+          # annotated message would win if we ever add one.
+          generate_release_notes: true
           # dist/* = binary + SHA256SUMS (+ .minisig once signing secrets
           # are configured); keeps fail_on_unmatched_files meaningful in
           # both signed and UNSIGNED mode.
