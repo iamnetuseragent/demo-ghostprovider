@@ -14,7 +14,7 @@ Private, local, no third parties.
 ## Requirements
 
 - SystemD (user-level)
-- GIT
+- Git
 - Linux (tested on Arch, Ubuntu, Fedora)
 
 ## Tech Stack
