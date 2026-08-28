@@ -59,12 +59,21 @@ The paid installer must obey the same rules enforced by the demo build:
 ## Release process (maintainer)
 
 1. Tag: `git tag -s vX.Y.Z` (or annotate + sign), push to GitHub and Codeberg.
-2. Demo pipeline: pushing the tag builds static musl artifacts and
-   attaches `SHA256SUMS` + `SHA256SUMS.minisig` (see `.github/workflows/release.yml`).
-   Full-version releases follow the identical procedure from the private repo.
-3. Local cross-check: `scripts/release-local.sh --sign` must produce the
-   same binary hash as CI; investigate any mismatch before publishing.
-4. Update the card data the bot serves (tag, commit, SHA256, fingerprint)
+2. **Build and sign locally first** — the signing key never lives on GitHub.
+   `scripts/release-local.sh --sign` produces `dist/SHA256SUMS` +
+   `dist/SHA256SUMS.minisig` and stages signed copies into `release/`.
+   Commit `release/SHA256SUMS` + `release/SHA256SUMS.minisig` in the same
+   change set as the tag.
+3. Pushing the `v*` tag makes CI build the static musl binary and then
+   **verify** the committed signature against `docs/release.pub` and match
+   its own checksums against the signed ones (the reproducibility audit).
+   An unsigned or mismatched release FAILS the workflow — with this policy
+   an unsigned release is never published at all. Full-version releases
+   follow the identical procedure from the private repo.
+4. Local cross-check confirmed by the identical procedure above:
+   `scripts/release-local.sh --sign` produces the same binary hash as CI;
+   investigate any mismatch before publishing.
+5. Update the card data the bot serves (tag, commit, SHA256, fingerprint)
    in the same change set as the release itself.
 
 ## Signing identity
@@ -82,6 +91,33 @@ Verify any release artifact:
 minisign -Vm SHA256SUMS -p docs/release.pub
 sha256sum -c SHA256SUMS
 ```
+
+## Git tag signing (GPG)
+
+Source releases are delivered as **tags**, and the source installer
+(`installation/install.sh`) runs `git verify-tag` before building anything.
+Tags must therefore be signed, and the signer's fingerprint must be
+publically verifiable — otherwise "verify the tag" is a ceremony over an
+unverifiable identity.
+
+* The maintainer GPG key (RSA/Ed25519, `git tag -s`) is created and its
+  fingerprint published here *before the first release tag is cut*. Until
+  then, no tag should advertise verification.
+* Users import the key out-of-band (from this doc/repo, never from a
+  transcript someone pasted) and run:
+
+  ```sh
+  gpg --keyserver keys.openpgp.org --recv-keys <FINGERPRINT>
+  git verify-tag vX.Y.Z            # after cloning
+  ```
+
+* The minisign key `RWQ+PeAmW6BzNqV8Io2xcC1hUxoJxffAGBg/o2YXsU9DZ6I3I4ivWDv3`
+  (fingerprint `3673A05B26E03D3E`) signs the *binary* checksums; the GPG key
+  signs the *source* tag. They are separate identities on purpose: the binary
+  key can be rotated without invalidating installed source builds.
+* **Status: pending** — the GPG fingerprint will be pasted into this section
+  when the key is provisioned; `installation/install.sh` prints a pointer to
+  this document when verification fails.
 
 ## Threat model
 

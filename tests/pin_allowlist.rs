@@ -10,7 +10,12 @@ fn allowlist_matches_documented_endpoints() {
     actual.sort();
     assert_eq!(
         actual,
-        vec!["api.github.com", "github.com", "raw.githubusercontent.com",],
+        vec![
+            "api.github.com",
+            "codeload.github.com",
+            "github.com",
+            "raw.githubusercontent.com"
+        ],
         "ALLOWED_ENDPOINTS changed! Update README.md (Transparency section) \
          and this test in the same commit, and justify it publicly."
     );

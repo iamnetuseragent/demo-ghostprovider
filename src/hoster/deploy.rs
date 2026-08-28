@@ -74,13 +74,13 @@ pub fn resolve_start(recipe: &DemoRecipe, project_dir: &Path, port: u16) -> Stri
 }
 
 /// Patch SearXNG settings.yml: real secret key, loopback bind, chosen port.
-fn prepare_searxng_config(project_dir: &Path, port: u16) {
+fn prepare_searxng_config(project_dir: &Path, port: u16) -> anyhow::Result<()> {
     let settings = project_dir.join("searx/settings.yml");
     let Ok(content) = std::fs::read_to_string(&settings) else {
-        return;
+        return Ok(());
     };
 
-    let secret_key = random_hex(32);
+    let secret_key = random_hex(32)?;
     let patched: Vec<String> = content
         .lines()
         .map(|line| {
@@ -102,30 +102,20 @@ fn prepare_searxng_config(project_dir: &Path, port: u16) {
         })
         .collect();
 
-    let _ = std::fs::write(settings, patched.join("\n") + "\n");
+    std::fs::write(settings, patched.join("\n") + "\n")?;
+    Ok(())
 }
 
-fn random_hex(bytes: usize) -> String {
-    // No rand crate: read the kernel CSPRNG; fall back to a time-derived
-    // value only if /dev/urandom is somehow unavailable.
+/// `bytes` random bytes from the kernel CSPRNG as lowercase hex. No weak
+/// fallback: a deployment secret derived from time+pid would be guessable, so
+/// a failure to read `/dev/urandom` aborts instead of degrading.
+fn random_hex(bytes: usize) -> anyhow::Result<String> {
+    use std::io::Read;
     let mut buf = vec![0u8; bytes];
-    let ok = std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| {
-            use std::io::Read;
-            f.read_exact(&mut buf)?;
-            Ok(())
-        })
-        .is_ok();
-    if !ok {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        for (i, b) in buf.iter_mut().enumerate() {
-            *b = ((nanos >> (i % 16)) as u8) ^ (std::process::id() as u8);
-        }
-    }
-    buf.iter().map(|b| format!("{b:02x}")).collect()
+    std::fs::File::open("/dev/urandom")?
+        .read_exact(&mut buf)
+        .context("reading /dev/urandom")?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Stop and delete a previously deployed unit so it can be replaced cleanly.
@@ -154,6 +144,15 @@ pub enum DeployOutcome {
 /// validate the URL against the curated recipes, preflight the build tools,
 /// then run the full deploy pipeline. Progress goes through `log`.
 pub fn run_deployment(url: &str, log: &dyn Fn(String)) -> DeployOutcome {
+    // Ambient opt-outs that reduce a transparency/isolation guarantee must be
+    // announced up front — never silently downgrade protection.
+    if let Some(w) = super::sandbox::sandbox_warning() {
+        log(format!("warn: {w}"));
+    }
+    if crate::netlog::logging_disabled() {
+        log("warn: GHOSTPROVIDER_NO_NETLOG — outbound requests are not written to net.log".into());
+    }
+
     let Some((owner, name)) = super::github::parse_github_url(url) else {
         log("! invalid GitHub URL format".into());
         return DeployOutcome::Rejected("bad-url");
@@ -280,7 +279,10 @@ pub fn deploy_service(
         }
     };
     if recipe.searxng {
-        prepare_searxng_config(&project_dir, port);
+        if let Err(e) = prepare_searxng_config(&project_dir, port) {
+            report_err(&mut result, format!("searxng config failed: {e}"));
+            return result;
+        }
     }
     let exec_start = resolve_start(recipe, &project_dir, port);
 
@@ -302,6 +304,7 @@ pub fn deploy_service(
         description: &format!("demo: {}", recipe.description),
         env_file: env_file.as_deref(),
         extra_env: &[],
+        loopback_only: recipe.loopback_only,
     };
     if let Err(e) = create_unit(&spec) {
         report_err(&mut result, format!("unit creation failed: {e:#}"));
@@ -349,6 +352,20 @@ pub fn deploy_service(
         }
     }
 
+    // Some apps bind every interface by default (Memos: `--port N` binds the
+    // wildcard). VERT loops back via our server and SearXNG is patched to
+    // 127.0.0.1, but for anything that ignores that, the exposure must be a
+    // loud warn: — an announced "localhost URL" while the port is reachable
+    // from the LAN is a real leak that no silent default can excuse.
+    if listens_non_loopback(port) {
+        emit(&format!(
+            "warn: {} is listening on a non-loopback address (port {port}) — \
+             anything on your network can reach it. This is the app's own bind \
+             behaviour; block it with a firewall or bind it to 127.0.0.1.",
+            recipe.service_name
+        ));
+    }
+
     crate::state::register(
         recipe.service_name,
         crate::state::ServiceEntry {
@@ -364,6 +381,30 @@ pub fn deploy_service(
     result.service_names = vec![recipe.service_name.into()];
     result.urls = vec![format!("http://localhost:{port}")];
     result
+}
+
+/// True when `ss`'s local-address column (`addr:port`) does not fall on
+/// loopback. `*` is the v4 wildcard, `[::]` the v6 one.
+fn address_is_non_loopback(addr: &str) -> bool {
+    let host = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr);
+    !matches!(host, "127.0.0.1" | "[::1]" | "localhost")
+}
+
+/// True when some process is listening on `port` on a non-loopback address.
+/// Reads the same `ss` table the scan renders; ownership attribution stays
+/// out of it.
+fn listens_non_loopback(port: u16) -> bool {
+    let Ok(out) = Command::new("ss").args(["-tlnp"]).output() else {
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .skip(1)
+        .filter_map(crate::analyzer::probe::parse_ss_row)
+        .any(|p| p.port == port && address_is_non_loopback(&p.address))
 }
 
 fn cleanup_failed(result: &mut HostResult, service: &str) {
@@ -524,5 +565,18 @@ mod tests {
             port,
             std::time::Duration::from_millis(300)
         ));
+    }
+
+    /// A wildcard or LAN-IP listener must classify as exposed; loopback must
+    /// not. This is the classification behind the deploy-time `warn:`.
+    #[test]
+    fn non_loopback_classification() {
+        assert!(address_is_non_loopback("*:23920"));
+        assert!(address_is_non_loopback("[::]:23920"));
+        assert!(address_is_non_loopback("0.0.0.0:5222"));
+        assert!(address_is_non_loopback("192.168.0.5:8080"));
+        assert!(!address_is_non_loopback("127.0.0.1:8080"));
+        assert!(!address_is_non_loopback("[::1]:8080"));
+        assert!(!address_is_non_loopback("localhost:8080"));
     }
 }

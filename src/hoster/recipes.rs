@@ -25,6 +25,10 @@ pub struct DemoRecipe {
     pub searxng: bool,
     /// Executables required on PATH for the build steps to succeed.
     pub tools: &'static [&'static str],
+    /// Runtime needs no outbound network (a built-in static server for
+    /// example): the unit gets `IPAddressAllow=loopback` so a compromised
+    /// build output can never call out to the internet.
+    pub loopback_only: bool,
 }
 
 pub const DEMO_SERVICES: &[DemoRecipe] = &[
@@ -43,6 +47,7 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         port: 0,
         searxng: false,
         tools: &["bun"],
+        loopback_only: true,
     },
     DemoRecipe {
         owner: "searxng",
@@ -60,6 +65,7 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         port: 8888,
         searxng: true,
         tools: &["python3"],
+        loopback_only: false,
     },
     DemoRecipe {
         owner: "usememos",
@@ -78,6 +84,7 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         port: 0,
         searxng: false,
         tools: &["pnpm", "go"],
+        loopback_only: false,
     },
 ];
 

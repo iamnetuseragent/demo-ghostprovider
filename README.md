@@ -45,7 +45,7 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
 
 ## Security Model
 
-- **All data stays local** — no telemetry. Outbound requests are locked to a compiled-in allowlist (`api.github.com`, `github.com`, `raw.githubusercontent.com`) — every other host is refused by the HTTP client itself, redirects included. Each request is logged to `~/.local/state/demo-ghostprovider/net.log`, and `demo-ghostprovider --show-endpoints` prints the allowlist plus this session's counters so you can verify instead of trust.
+- **All data stays local** — no telemetry. Outbound requests are locked to a compiled-in allowlist (`api.github.com`, `github.com`, `raw.githubusercontent.com`, `codeload.github.com`) and to **HTTPS only**. Redirects do not bypass it: they are followed one hop at a time, and every redirect target is re-checked against the allowlist *before* a connection to it opens. Each request (each redirect hop separately) is logged to `~/.local/state/demo-ghostprovider/net.log`, and `demo-ghostprovider --show-endpoints` prints the allowlist plus this session's counters so you can verify instead of trust. `codeload.github.com` is the download host GitHub points archive requests at — reachable only as an explicitly re-checked hop.
 - **No root required** — services run as systemd user-level units
 - **Explicit confirmation before deploy** — the software always asks YES/NO before hosting a service
 - **Service sandboxing:**
@@ -54,10 +54,16 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
   - `ProtectSystem=full` — /usr, /boot, and /etc are read-only
   - `ReadWritePaths` — restricted to the deployed project directory; caches stay inside it (`XDG_CACHE_HOME`, npm/pnpm/yarn/bun/cargo/go cache dirs are redirected to `~project/.ghost-cache`, persist between deployments so repeated builds reuse downloaded artifacts, and are removed together with the clone when the service is deleted)
   - Kernel surface locked: `ProtectKernelTunables/Modules/ControlGroups=yes`, `RestrictNamespaces`, `LockPersonality`, `RestrictRealtime`, `RestrictSUIDSGID`, empty `CapabilityBoundingSet`
+  - **Credential scrub** — build steps never inherit `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `DOCKER_AUTH_CONFIG` or `BUN_AUTH_TOKEN` (a hostile build step could otherwise exfiltrate a deployment credential); deployed services get the same via `UnsetEnvironment` plus `ProtectProc=invisible`
+  - **Honest degradation** — `GHOSTPROVIDER_NO_SANDBOX=1` or a missing `systemd-run` prints a `warn:` line on every deploy instead of silently weakening isolation; the same applies to `GHOSTPROVIDER_NO_NETLOG`
+  - **Loopback where possible, never a silent LAN exposure** — VERT is served by our own loopback-only server and its unit gets `IPAddressAllow=127.0.0.1 ::1` (runtime egress locked to loopback). Apps that must reach the internet (SearXNG, Memos) cannot be network-locked; after start every deployment's listener address is re-checked, and a service found binding a non-loopback address prints an explicit `warn:` instead of quietly exposing the port to your LAN
+  - **Threat model, stated plainly** — cloned third-party code builds and runs with your user's *read* access to `$HOME` (`ProtectHome=read-only` and `ProtectSystem=full` stop writes, not reads). Treat every deployed upstream as untrusted: never rely on files under `$HOME` being invisible to a service you host, and pin sensitive work to a dedicated user. Deployments fetch each recipe's default branch without commit pinning (TOFU), so whatever `main` moves to is what you get; review service diffs before redeploying.
+  - **Deadline, not hang** — every build command runs under a timeout (900s), enforced in both the sandboxed (`RuntimeMaxSec`) and plain paths, so an untrusted build cannot wedge your user session
+- **Release supply chain** — the minisign secret key never lives on GitHub: releases are signed locally (`scripts/release-local.sh --sign`), the signature files are committed, and CI refuses to publish anything unsigned; `install.sh` requires the signature too (`--allow-unsigned` is the explicit opt-out)
 
 ## System Scan
 
-Scans your machine for prerequisites and maps occupied ports with their owning processes — nothing more. Deliberately: no VPN detection, no service fingerprinting, so the report stays useless to anyone but you.
+Scans your machine for prerequisites and maps occupied ports with their owning processes — nothing more. Deliberately: no VPN detection, no service fingerprinting, so the report stays useless to anyone but you. "Network" is measured with the same allowlisted, net.log-recorded HTTPS GET to github.com the fetches use — never ICMP ping or raw DNS.
 
 ### Why System Scan?
 

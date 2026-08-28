@@ -4,10 +4,12 @@
 #   curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh
 #   curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh -s -- --uninstall
 #
-# Downloads the latest tagged musl binary, verifies sha256 (always) and
-# the minisign signature (when present), installs into ~/.local/bin.
+# Downloads the latest tagged musl binary, verifies sha256 AND the minisign
+# signature (refusing unsigned releases), installs into ~/.local/bin.
 #
 # Flags: --uninstall | --tag v0.0.14 | --bin-dir DIR | --mirror codeberg
+#        | --allow-unsigned   (skip the mandatory signature check for a
+#                              trusted mirror / local test — never the default)
 set -eu
 
 REPO_GH="iamnetuseragent/demo-ghostprovider"
@@ -21,6 +23,7 @@ TAG=""
 BIN_DIR="$DEFAULT_BIN_DIR"
 HOST="github"
 ACTION="install"
+ALLOW_UNSIGNED=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -28,6 +31,7 @@ while [ $# -gt 0 ]; do
         --tag) TAG="${2:?}"; shift ;;
         --bin-dir) BIN_DIR="${2:?}"; shift ;;
         --mirror) HOST="codeberg" ;;   # also auto-fallback per file
+        --allow-unsigned) ALLOW_UNSIGNED=1 ;;
         *) printf 'unknown arg: %s\n' "$1" >&2; exit 2 ;;
     esac
     shift
@@ -50,10 +54,16 @@ if [ "$ACTION" = "uninstall" ]; then
     exit 0
 fi
 
-for dep in curl sha256sum uname tar; do need "$dep"; done
+for dep in curl sha256sum uname tar grep; do need "$dep"; done
 
 [ "$(uname -s)" = "Linux" ] || die "prebuilt binaries are Linux-only; build from source instead"
 [ "$(uname -m)" = "x86_64" ] || die "prebuilt binaries are x86_64-only; build from source instead"
+
+# A release tag is `v<major>.<minor>.<patch>` — anything else (a sed
+# extraction mistake, a malicious redirect) must abort, not download.
+valid_tag() {
+    printf '%s' "$1" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'
+}
 
 if [ -z "$TAG" ]; then
     log "resolving latest release tag..."
@@ -66,6 +76,7 @@ if [ -z "$TAG" ]; then
     fi
     [ -n "$TAG" ] || die "could not resolve latest tag; pass one explicitly: --tag v0.0.14"
 fi
+valid_tag "$TAG" || die "malformed tag '$TAG' — expected v<major>.<minor>.<patch>; refusing to install"
 
 case "$HOST" in
     github)  BASE="https://github.com/$REPO_GH/releases/download/$TAG" ;;
@@ -76,8 +87,9 @@ ART="$BIN_NAME-$TAG-x86_64-linux-musl"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-fetch() { # fetch <name> -> 0 when downloaded; quiet: a missing optional
-          # file (e.g. SHA256SUMS.minisig) must not spook the user
+# fetch <name> -> 0 when downloaded; quiet: a missing optional
+#          file must not spook the user (signature handling is below)
+fetch() {
     curl -fsSL -o "$TMP/$1" "$BASE/$1" 2>/dev/null || \
         curl -fsSL -o "$TMP/$1" \
         "https://github.com/$REPO_GH/releases/download/$TAG/$1" 2>/dev/null
@@ -89,7 +101,11 @@ fetch "SHA256SUMS"     || die "download failed: SHA256SUMS"
 
 ( cd "$TMP" && sha256sum -c SHA256SUMS ) || die "checksum mismatch — aborting"
 
-if fetch "SHA256SUMS.minisig"; then
+# Signature is MANDATORY: an allowlist-audited binary whose checksum was
+# never signed could have been re-signed by whoever controls the release
+# endpoint. Only an explicit --allow-unsigned bypasses this.
+fetch "SHA256SUMS.minisig" || true
+if [ -f "$TMP/SHA256SUMS.minisig" ]; then
     if command -v minisign >/dev/null; then
         ( cd "$TMP" && minisign -Vm SHA256SUMS -P "$RELEASE_PUB" ) \
             || die "signature verification FAILED — aborting"
@@ -97,12 +113,13 @@ if fetch "SHA256SUMS.minisig"; then
         ( cd "$TMP" && rsign verify -P "$RELEASE_PUB" -x SHA256SUMS.minisig SHA256SUMS ) \
             || die "signature verification FAILED — aborting"
     else
-        die "minisig present but neither minisign nor rsign is installed — install one and retry"
+        die "SHA256SUMS.minisig present but neither minisign nor rsign is installed — install one and retry"
     fi
     ok "minisign signature verified (key $FINGERPRINT)"
+elif [ "$ALLOW_UNSIGNED" -eq 1 ]; then
+    warn "release has no minisign signature (SHA256SUMS.minisig) — --allow-unsigned set, checksum-only install."
 else
-    warn "release is UNSIGNED (SHA256SUMS.minisig missing) — verified by checksum only."
-    warn "expected once signing secrets are configured; see docs/DISTRIBUTION.md ($FINGERPRINT)"
+    die "release is UNSIGNED (SHA256SUMS.minisig missing) — refusing to install; verify the release is properly signed (docs/DISTRIBUTION.md, key $FINGERPRINT)"
 fi
 
 mkdir -p "$BIN_DIR"

@@ -34,18 +34,47 @@ fn write_askpass() -> anyhow::Result<Option<std::path::PathBuf>> {
         .filter(|t| !t.is_empty());
     let Some(token) = token else { return Ok(None) };
 
-    let path = std::env::temp_dir().join(format!("gp-askpass-{}", std::process::id()));
-    #[cfg(unix)]
-    std::fs::write(
-        &path,
-        format!("#!/bin/sh\necho '{}'\n", shell_quote(&token)),
-    )?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+    // Prefer XDG_RUNTIME_DIR (per-user, 0700, tmpfs) so other local users
+    // cannot even enumerate the helper; fall back to /tmp. The file is
+    // created with O_EXCL + 0600 — never write-then-chmod through a name an
+    // attacker could have predicted and symlinked.
+    let parent = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(std::env::temp_dir);
+    let content = format!("#!/bin/sh\necho '{}'\n", shell_quote(&token));
+    for _ in 0..100 {
+        let path = parent.join(format!(
+            "gp-askpass-{}-{}",
+            std::process::id(),
+            crate::atomic::random_hex(8).unwrap_or_default()
+        ));
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    let _ = f.write_all(content.as_bytes());
+                    return Ok(Some(path));
+                }
+                Err(_) => continue, // name collision: try another
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            match std::fs::write(&path, &content) {
+                Ok(()) => return Ok(Some(path)),
+                Err(_) => continue,
+            }
+        }
     }
-    Ok(Some(path))
+    anyhow::bail!("could not create a unique askpass helper")
 }
 
 /// Single-quote for POSIX sh: `'` → `'\''`.
@@ -201,22 +230,17 @@ fn tarball_fallback(url: &str, dest: &Path) -> CloneStatus {
         format!("{base}/archive/refs/heads/main.tar.gz"),
     ];
     for tb in candidates {
-        let tmp = std::env::temp_dir().join(format!("gp-tarball-{}", uuid()));
-        let mut cmd = Command::new("curl");
-        cmd.args(["-4", "-sL", "-o"]).arg(&tmp).arg(&tb);
-        if let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN")) {
-            cmd.arg("-H").arg(format!("Authorization: token {token}"));
-        }
-        let Some(out) = cmd.output().ok().map(|o| o.status.success()) else {
-            continue;
+        // Fetch through the allowlisted client so the download is net.log-accounted
+        // and the token stays out of argv (it only ever rides an Authorization
+        // header for api.github.com — never for tarball hosts).
+        let data = match super::httpclient::get_bytes(&tb) {
+            Ok(bytes) if !bytes.is_empty() => bytes,
+            _ => continue,
         };
-        let size_ok = std::fs::metadata(&tmp)
-            .map(|m| m.len() > 1000)
-            .unwrap_or(false);
-        if !(out && size_ok) {
-            let _ = std::fs::remove_file(&tmp);
-            continue;
-        }
+        let tmp = match write_tarball_temp(&data) {
+            Some(p) => p,
+            None => continue,
+        };
         let _ = std::fs::create_dir_all(dest);
         let untar = Command::new("tar")
             .args(["xzf"])
@@ -247,6 +271,39 @@ fn tarball_fallback(url: &str, dest: &Path) -> CloneStatus {
     }
 }
 
+/// Write downloaded bytes to a private, unique temp file, refusing to follow
+/// a pre-existing symlink (O_EXCL) and never leaving readable leftovers.
+fn write_tarball_temp(data: &[u8]) -> Option<std::path::PathBuf> {
+    use std::io::Write;
+    for _ in 0..100 {
+        let path = std::env::temp_dir().join(format!(
+            "gp-tarball-{}-{}",
+            std::process::id(),
+            crate::atomic::random_hex(8).unwrap_or_default()
+        ));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+            {
+                let _ = f.write_all(data);
+                return Some(path);
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            if std::fs::write(&path, data).is_ok() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 fn run_git(args: &[String], env: &HashMap<String, String>) -> Option<std::process::Output> {
     let mut cmd = Command::new("git");
     cmd.args(args).env_clear().envs(env);
@@ -261,15 +318,6 @@ fn cleanup_askpass(path: Option<&std::path::Path>) {
 
 fn short(s: &str) -> String {
     s.chars().take(120).collect()
-}
-
-fn uuid() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
-        ^ (std::process::id() as u64)
 }
 
 #[cfg(test)]

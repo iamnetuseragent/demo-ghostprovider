@@ -4,13 +4,13 @@
 #
 # After running:
 #   1. copy ~/.config/demo-ghostprovider/release.pub -> docs/release.pub
-#      in BOTH repositories and commit it;
+#      in BOTH repositories (demo + private) and commit it;
 #   2. put the fingerprint (first line of release.pub) into
 #      docs/DISTRIBUTION.md and the README trust-model section;
-#   3. for CI signing, create GitHub secrets on this repository:
-#        MINISIGN_SECRET_KEY = contents of release.key
-#                              (unencrypted variant: `minisign -C -W -s <key>`)
-#        MINISIGN_PASSWORD   = its password ("" for a -W key)
+#   3. signing is LOCAL-ONLY by design: the secret key stays on this
+#      machine, never in CI. `scripts/release-local.sh --sign` writes
+#      dist/SHA256SUMS(.minisig) and stages signed copies into release/ —
+#      commit those with the tag; CI only verifies, it never signs.
 #   4. back the private key up offline; losing it forfeits the identity.
 set -eu
 

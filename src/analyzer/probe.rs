@@ -50,14 +50,12 @@ fn detect_interfaces() -> Vec<InterfaceInfo> {
         .collect()
 }
 
-/// Audit lesson applied: unlike the Python version this respects the exit
-/// code instead of returning true whenever `ping` exists.
-fn ping_ok(host: &str) -> bool {
-    Command::new("ping")
-        .args(["-c", "1", "-W", "2", host])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+/// Allowlisted, net.log-recorded network probe: an HTTPS GET to github.com
+/// (the host every fetch in this tool actually needs). Deliberately NOT
+/// ICMP ping or raw DNS resolution — those would be outbound contacts the
+/// transparency guarantees do not cover.
+fn https_probe_ok() -> bool {
+    crate::hoster::httpclient::get_text("https://github.com/").is_ok()
 }
 
 /// Parse one `ss -tlnp` data row.
@@ -142,9 +140,9 @@ pub fn run_analysis() -> AnalysisResult {
         python3: which("python3"),
         node: which("node"),
         localhost: localhost_ok,
-        network: ping_ok("127.0.0.1")
-            || ping_ok("192.168.0.1")
-            || std::net::ToSocketAddrs::to_socket_addrs(&("github.com", 443)).is_ok(),
+        // Everything this tool fetches lives behind github.com, so a
+        // reachable github.com is the honest definition of "network".
+        network: https_probe_ok(),
         interfaces,
         listening_ports: ports,
         gateway: get_gateway(),

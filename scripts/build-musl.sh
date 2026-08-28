@@ -21,8 +21,11 @@ podman run --rm \
     -w /src \
     "$IMAGE" sh -c '
         set -eu
-        pacman -Sy --noconfirm --needed rustup musl >/dev/null
-        rustup default stable >/dev/null 2>&1
+        # -Syu and a PINNED rustc must match scripts/release-local.sh and
+        # .github/workflows/release.yml byte-for-byte. Bump all together,
+        # consciously — `stable` here would silently diverge from CI.
+        pacman -Syu --noconfirm --needed rustup musl >/dev/null
+        rustup default 1.98.0 >/dev/null 2>&1
         rustup target add x86_64-unknown-linux-musl >/dev/null 2>&1
         cargo build --release --target x86_64-unknown-linux-musl
     '

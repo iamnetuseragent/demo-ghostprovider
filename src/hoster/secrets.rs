@@ -51,12 +51,28 @@ fn secrets_dir() -> PathBuf {
     base.join("demo-ghostprovider/secrets")
 }
 
+/// Create the secrets directory and force mode 0700 so sibling users can
+/// never list or open per-service EnvironmentFiles.
+fn ensure_secrets_dir() -> anyhow::Result<()> {
+    let dir = secrets_dir();
+    if !dir.is_dir() {
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("protecting {}", dir.display()))?;
+    }
+    Ok(())
+}
+
 pub fn env_file_for(service_name: &str) -> PathBuf {
     secrets_dir().join(format!("{service_name}.env"))
 }
 
-/// Write env vars to a per-service EnvironmentFile with mode 0600.
-/// Returns the path, or `Ok(None)` when `env` is empty.
+/// Write env vars to a per-service EnvironmentFile with mode 0600 inside a
+/// 0700 directory. Returns the path, or `Ok(None)` when `env` is empty.
 pub fn write_env_file(
     service_name: &str,
     env: &BTreeMap<String, String>,
@@ -64,8 +80,7 @@ pub fn write_env_file(
     if env.is_empty() {
         return Ok(None);
     }
-    let dir = secrets_dir();
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    ensure_secrets_dir()?;
 
     let mut lines = Vec::new();
     for (key, value) in env {
@@ -78,13 +93,13 @@ pub fn write_env_file(
         }
         lines.push(format!("{safe_key}=\"{}\"", escape_env_value(value)?));
     }
+    // Atomic write (temp + rename): the secret file is mode 0600 from its
+    // first byte and a pre-planted symlink at the final name is replaced,
+    // never followed (write-then-chmod TOCTOU and symlink follow are both
+    // audit findings).
     let path = env_file_for(service_name);
-    std::fs::write(&path, lines.join("\n") + "\n")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    crate::atomic::write_atomic(&path, (lines.join("\n") + "\n").as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
     Ok(Some(path))
 }
 

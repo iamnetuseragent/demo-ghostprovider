@@ -5,12 +5,19 @@
 #
 # Usage:
 #   scripts/release-local.sh            build + checksums into dist/
-#   scripts/release-local.sh --sign     also sign dist/SHA256SUMS
+#   scripts/release-local.sh --sign     sign dist/SHA256SUMS and stage
+#                                       release/SHA256SUMS (+ .minisig)
+#                                       for commit
+#
+# Local-only signing policy: the release secret key NEVER lives on GitHub.
+# `--sign` also writes the signed checksums into release/ so they can be
+# committed; CI then REQUIRES them (release.yml "Verify committed
+# signature") and never publishes an unsigned release.
 #
 # Signing key default: ~/.config/demo-ghostprovider/release.key
 # (generate once with scripts/keygen-release.sh)
 #
-# Requirements: podman (or docker; adjust below), git tag for VERSION.
+# Requirements: podman (or docker; adjust below), git tag for VERSION, minisign (with --sign).
 set -eu
 
 # Same pinned digest as scripts/build-musl.sh and .github/workflows/release.yml.
@@ -33,9 +40,10 @@ podman run --rm \
     -w /src \
     "$IMAGE" sh -c '
         set -eu
-        pacman -Sy --noconfirm --needed rustup musl >/dev/null
-        # Pinned, not `stable`: must match .github/workflows/release.yml
-        # byte-for-byte. Bump both together.
+        # -Syu and the pinned rustc must match scripts/build-musl.sh and
+        # .github/workflows/release.yml byte-for-byte. Bump all three
+        # together, consciously.
+        pacman -Syu --noconfirm --needed rustup musl >/dev/null
         rustup default 1.98.0 >/dev/null 2>&1
         rustup target add x86_64-unknown-linux-musl >/dev/null 2>&1
         cargo build --release --locked --target x86_64-unknown-linux-musl
@@ -56,4 +64,11 @@ if [ "$SIGN" -eq 1 ]; then
     # this machine and is not stored anywhere.
     minisign -Sm "dist/SHA256SUMS" -s "$KEY"
     echo "signed:   dist/SHA256SUMS.minisig"
+
+    # Stage the signed checksums for commit so CI can both verify the
+    # signature and compare it against its own byte-identical build.
+    mkdir -p release
+    cp dist/SHA256SUMS dist/SHA256SUMS.minisig release/
+    echo "staged:   release/SHA256SUMS, release/SHA256SUMS.minisig"
+    echo "          -> commit them and push the tag (CI will refuse an unsigned release)"
 fi

@@ -34,9 +34,11 @@ fn store(state: &StateFile) -> anyhow::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(state)?)?;
-    std::fs::rename(&tmp, &path)?;
+    // Atomic write temp + rename: the live registry (project dirs + ports) is
+    // 0600 from its first byte, a pre-planted symlink at the destination is
+    // replaced instead of followed, and readers never see a partial file.
+    crate::atomic::write_atomic(&path, &serde_json::to_vec_pretty(state)?)
+        .with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 

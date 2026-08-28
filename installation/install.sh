@@ -7,6 +7,15 @@
 #     stdin and stdout are a real terminal, otherwise prints instructions
 #   - never contacts anything except the git hosts listed below
 #
+# Supply chain: by default the LATEST release tag is pinned and its GPG
+# signature verified (`git verify-tag`) before anything is built. Building
+# an arbitrary HEAD without a tag is an explicit decision: `--head`.
+#
+# Flags:
+#   --tag vX.Y.Z      pin an exact release tag (default: resolve latest)
+#   --head            build the default branch HEAD instead of a tag
+#   --no-verify-tag   skip the git verify-tag signature check (not recommended)
+#
 # Requirements: Linux with systemd user session, git, cargo (rustup works).
 set -euo pipefail
 
@@ -26,6 +35,25 @@ ok()   { printf "\033[32m%s\033[0m\n" "$*"; }
 warn() { printf "\033[33m%s\033[0m\n" "$*"; }
 err()  { printf "\033[31m%s\033[0m\n" "$*" >&2; exit 1; }
 
+# Mode: latest (default) | tag | head
+MODE="latest"
+TAG=""
+VERIFY_TAG=1
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --head) MODE="head" ;;
+    --tag) MODE="tag"; TAG="${2:?}"; shift ;;
+    --no-verify-tag) VERIFY_TAG=0 ;;
+    *) err "unknown arg: $1 (usage: [--tag vX.Y.Z | --head] [--no-verify-tag])" ;;
+  esac
+  shift
+done
+
+valid_tag() {
+  [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
 case "$(uname -s)" in
   Linux*) ;;
   *) err "This installer supports Linux only. Detected: $(uname -s)" ;;
@@ -40,16 +68,50 @@ case "$system_state" in
 esac
 command -v git      >/dev/null || err "git not found. Install git first."
 command -v cargo    >/dev/null || err "cargo not found. Install Rust via https://rustup.rs (or your distro's rust+cargo)."
+command -v curl     >/dev/null || err "curl not found (needed to resolve the latest release tag)."
+command -v gpg      >/dev/null || err "gpg not found (needed for 'git verify-tag'). Install gnupg."
 
-info "=> Fetching demo-ghostprovider sources..."
+if [ "$MODE" = "tag" ]; then
+  valid_tag "$TAG" || err "invalid tag '$TAG' — expected v<major>.<minor>.<patch>"
+fi
+
+if [ "$MODE" = "latest" ]; then
+  info "=> Resolving latest release tag..."
+  for api in \
+    "https://api.github.com/repos/iamnetuseragent/demo-ghostprovider/releases/latest" \
+    "https://codeberg.org/api/v1/repos/netuser/demo-ghostprovider/releases?limit=1"
+  do
+    TAG="$(curl -fsSL "$api" 2>/dev/null \
+           | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
+    [ -n "$TAG" ] && break
+  done
+  [ -n "$TAG" ] || err "could not resolve latest tag; pass one explicitly: --tag v0.0.14"
+  valid_tag "$TAG" || err "resolved tag '$TAG' is malformed — refusing"
+  info "   latest tag: $TAG"
+fi
+
+info "=> Fetching demo-ghostprovider sources (tag: ${TAG:-HEAD})..."
 clone_ok=""
 if [ -d "$SRC_DIR/.git" ]; then
   info "   existing checkout found, updating..."
-  if git -C "$SRC_DIR" pull --ff-only; then
-    clone_ok=yes
+  if [ "$MODE" = "head" ]; then
+    if git -C "$SRC_DIR" pull --ff-only; then
+      clone_ok=yes
+    else
+      warn "   update failed; rebuilding from current sources."
+      clone_ok=yes
+    fi
   else
-    warn "   update failed; rebuilding from current sources."
-    clone_ok=yes
+    # Re-pin the resolved/explicit tag: an existing checkout may be older.
+    # A failed re-pin is FATAL here — silently rebuilding from older sources
+    # while the user asked for $TAG would be a silent version rollback
+    # (worse with --no-verify-tag, where nothing would flag the mismatch).
+    if git -C "$SRC_DIR" fetch --depth=1 --tags origin >/dev/null 2>&1 \
+       && git -C "$SRC_DIR" checkout -q "$TAG"; then
+      clone_ok=yes
+    else
+      err "update to $TAG failed (network?). Refusing to rebuild from older sources. Fix the connection and retry."
+    fi
   fi
 else
   # Leftover directory without a checkout (e.g. data-only remains) must not
@@ -58,13 +120,34 @@ else
   for repo in "${REPOS[@]}"; do
     host="$(printf '%s' "$repo" | sed -E 's#https://([^/]+)/.*#\1#')"
     info "   trying $host ..."
-    if git clone --depth=1 "$repo" "$SRC_DIR"; then
-      clone_ok=yes
-      break
+    if [ "$MODE" = "head" ]; then
+      git clone --depth=1 "$repo" "$SRC_DIR" && { clone_ok=yes; break; }
+    else
+      git clone --depth=1 --branch="$TAG" "$repo" "$SRC_DIR" && { clone_ok=yes; break; }
     fi
     warn "   $host unreachable or refused."
   done
   [ -n "$clone_ok" ] || err "All mirrors failed. Check your network and try again."
+fi
+
+if [ "$MODE" != "head" ]; then
+  if [ "$VERIFY_TAG" -eq 1 ]; then
+    info "=> Verifying tag signature (git verify-tag ...)"
+    # Expected signing identity. The GPG fingerprint is published in
+    # docs/DISTRIBUTION.md (provisioned before the first signed tag); the
+    # minisign key-id that signs the binary checksums is 3673A05B26E03D3E.
+    if git -C "$SRC_DIR" verify-tag "$TAG"; then
+      ok "   tag $TAG: good signature."
+      info "   signature must be from the maintainer key listed in docs/DISTRIBUTION.md"
+    else
+      err "git verify-tag FAILED for $TAG. Import the maintainer's signing key \
+(see docs/DISTRIBUTION.md) or rerun with --no-verify-tag (not recommended)."
+    fi
+  else
+    warn "   --no-verify-tag: skipping signature verification (not recommended)."
+  fi
+else
+  warn "   --head: building the default branch without tag verification (not recommended for production)."
 fi
 
 info "=> Building (release profile, ~1 minute)..."

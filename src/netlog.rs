@@ -23,8 +23,19 @@ use std::time::SystemTime;
 /// Hosts this binary may contact. Keep in sync with README "Security model";
 /// `test_allowed_endpoints_matches_docs` pins the exact contents, so adding
 /// a host without updating docs fails CI.
-pub const ALLOWED_ENDPOINTS: &[&str] =
-    &["api.github.com", "github.com", "raw.githubusercontent.com"];
+///
+/// `codeload.github.com` is reachable only as the *redirect target* of
+/// `github.com/<owner>/<repo>/archive/*` downloads (the tarball fallback
+/// used when git is unavailable). The HTTP client re-checks the allowlist on
+/// every redirect hop, so this entry is not a bypass — it is the explicit,
+/// net.log-visible permit for a host the GitHub archive flow genuinely
+/// needs.
+pub const ALLOWED_ENDPOINTS: &[&str] = &[
+    "api.github.com",
+    "github.com",
+    "raw.githubusercontent.com",
+    "codeload.github.com",
+];
 
 /// Hosts treated as loopback. Allowed only for *local health checks*
 /// (verifying a deployed service responds), never for API calls.
@@ -45,12 +56,20 @@ struct Registry {
 
 static REGISTRY: Mutex<Option<Registry>> = Mutex::new(None);
 
+/// True when the user disabled on-disk network logging
+/// (`GHOSTPROVIDER_NO_NETLOG=1`). Accepts the same truthy values as the
+/// sandbox opt-out so both flags parse identically. The lost guarantee is a
+/// security-relevant fact and must be surfaced (TUI/deploy status), never
+/// silent.
+pub fn logging_disabled() -> bool {
+    crate::flags::env_flag("GHOSTPROVIDER_NO_NETLOG")
+}
+
 fn with_registry<T>(f: impl FnOnce(&mut Registry) -> T) -> T {
     let mut guard = REGISTRY.lock().unwrap();
     let reg = guard.get_or_insert_with(|| Registry {
         records: Vec::new(),
-        // Opt-out via GHOSTPROVIDER_NO_NETLOG=1
-        file: if std::env::var_os("GHOSTPROVIDER_NO_NETLOG").is_some_and(|v| v == "1") {
+        file: if logging_disabled() {
             None
         } else {
             Some(crate::paths::netlog_file())
@@ -63,11 +82,23 @@ fn append_to_file(file: &std::path::Path, line: &str) {
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(file)
+    // mode 0600: the log traces every outbound request host+path — a privacy
+    // record other local users must not read. Enforced on every append (not
+    // only at creation): a pre-existing permissive net.log from an older
+    // version is tightened in place, before anything is written to it.
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
     {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    if let Ok(mut f) = opts.open(file) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600));
+        }
         let _ = writeln!(f, "{line}");
     }
 }
@@ -169,7 +200,12 @@ mod tests {
         // ALLOWED_ENDPOINTS must update both — otherwise this test fails.
         assert_eq!(
             ALLOWED_ENDPOINTS,
-            &["api.github.com", "github.com", "raw.githubusercontent.com"],
+            &[
+                "api.github.com",
+                "github.com",
+                "raw.githubusercontent.com",
+                "codeload.github.com"
+            ],
             "allowlist changed — update README 'Security model' in the same commit"
         );
     }

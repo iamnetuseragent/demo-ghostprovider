@@ -9,10 +9,11 @@
 //! * A slow service stays `activating` well past 5s, so a single late check
 //!   produced false "crashed" reports.
 
-use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
+
+use anyhow::Context;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 pub const START_BUDGET: Duration = Duration::from_secs(30);
@@ -57,6 +58,16 @@ pub fn escape_unit_value(value: &str) -> String {
         .replace('%', "%%")
 }
 
+/// Quote every whitespace-separated argument of an ExecStart command line so
+/// values containing spaces (e.g. a HOME path) survive systemd's splitter.
+/// Verified against systemd 261 with `systemd-analyze verify`.
+pub fn quote_exec_args(cmd: &str) -> String {
+    cmd.split_whitespace()
+        .map(|word| format!("\"{}\"", escape_unit_value(word)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn systemctl(args: &[&str]) -> Option<(bool, String)> {
     let out = Command::new("systemctl")
         .arg("--user")
@@ -81,6 +92,10 @@ pub struct UnitSpec<'a> {
     pub description: &'a str,
     pub env_file: Option<&'a Path>,
     pub extra_env: &'a [(String, String)],
+    /// Recipe's runtime needs no outbound network (vert's built-in static
+    /// server): lock the unit to loopback so a compromised build output can
+    /// never phone home.
+    pub loopback_only: bool,
 }
 
 pub fn create_unit(spec: &UnitSpec) -> anyhow::Result<()> {
@@ -110,30 +125,43 @@ pub fn create_unit(spec: &UnitSpec) -> anyhow::Result<()> {
 
     // ProtectSystem=full keeps /usr and /boot read-only while leaving /etc
     // readable: strict mode breaks DNS resolution via /etc/resolv.conf.
+    // Paths with spaces need quoting in list/command directives (verified
+    // against systemd 261 via `systemd-analyze verify`); WorkingDirectory is
+    // a single value and stays unquoted.
     let working = escape_unit_value(&spec.working_dir.to_string_lossy());
+    let ip_allow = if spec.loopback_only {
+        "IPAddressAllow=127.0.0.1 ::1\n"
+    } else {
+        ""
+    };
     let content = format!(
         "[Unit]\nDescription={desc}\nAfter=network.target\n\n\
           [Service]\nType=simple\nWorkingDirectory={working}\nExecStart={exec}\n\
           Restart=always\nRestartSec=5\n{env_lines}{env_file_line}\n\
-          # -- Privacy & Security Hardening --\n\
+          # A service must never inherit ambient CI credentials (GITHUB_TOKEN,
+          # GH_TOKEN, package-manager tokens) via the manager environment.\n\
+         UnsetEnvironment=GITHUB_TOKEN GH_TOKEN NPM_TOKEN NODE_AUTH_TOKEN DOCKER_AUTH_CONFIG BUN_AUTH_TOKEN\n\
+         # -- Privacy & Security Hardening --\n\
          NoNewPrivileges=yes\nProtectHome=read-only\nProtectSystem=full\n\
-         ReadWritePaths={working}\nEnvironment=\"XDG_CACHE_HOME={working}/.ghost-cache\"\n\
+         ReadWritePaths=\"{working}\"\nEnvironment=\"XDG_CACHE_HOME={working}/.ghost-cache\"\n\
          ProtectKernelTunables=yes\nProtectKernelModules=yes\nProtectControlGroups=yes\n\
          RestrictNamespaces=yes\nLockPersonality=yes\nRestrictRealtime=yes\n\
-         RestrictSUIDSGID=yes\nCapabilityBoundingSet=\n\n\
-         [Install]\nWantedBy=default.target\n",
+         RestrictSUIDSGID=yes\nProtectProc=invisible\nCapabilityBoundingSet=\n\
+         {ip_allow}[Install]\nWantedBy=default.target\n",
         desc = escape_unit_value(if spec.description.is_empty() {
             &service_name
         } else {
             spec.description
         }),
         working = working,
-        exec = escape_unit_value(spec.exec_start),
+        exec = quote_exec_args(spec.exec_start),
     );
 
+    // Atomic write: a unit is replaced whole (systemd never reads a half of
+    // it) and the destination name is never followed as a symlink.
     let unit_path = unit_dir.join(format!("{service_name}.service"));
-    let mut f = std::fs::File::create(&unit_path)?;
-    f.write_all(content.as_bytes())?;
+    crate::atomic::write_atomic(&unit_path, content.as_bytes())
+        .with_context(|| format!("writing unit {}", unit_path.display()))?;
 
     // Best effort reload/enable; failures surface at start time.
     let _ = systemctl(&["daemon-reload"]);
@@ -229,5 +257,14 @@ mod tests {
         assert_eq!(escape_unit_value("100%"), "100%%");
         assert_eq!(escape_unit_value("q\"q"), "q\\\"q");
         assert_eq!(escape_unit_value("l1\nl2"), "l1\\nl2");
+    }
+
+    /// Every ExecStart word is double-quoted so paths/spaces round-trip.
+    #[test]
+    fn exec_start_words_are_quoted() {
+        let plain = quote_exec_args("/home/u bin/serve --port 8000");
+        assert_eq!(plain, "\"/home/u\" \"bin/serve\" \"--port\" \"8000\"");
+        let speced = quote_exec_args("/x/%h-demo --flag");
+        assert_eq!(speced, "\"/x/%%h-demo\" \"--flag\"");
     }
 }

@@ -3,15 +3,19 @@
 # Supply-chain discipline mirrors scripts/build-musl.sh:
 #   * the build happens inside the SAME pinned-by-digest Arch container,
 #   * dependencies resolve strictly against the committed Cargo.lock,
-#   * checksums are signed with minisign; the public key lives in-tree at
-#     docs/release.pub so verification never depends on this repository.
+#   * actions are pinned by full commit SHA (never a mutable tag),
+#   * the minisign signature is created LOCALLY (scripts/release-local.sh
+#     --sign) and committed as release/SHA256SUMS + release/SHA256SUMS.minisig.
+#     The signing key therefore never lives on GitHub; CI only *verifies*
+#     against docs/release.pub (in-tree) — a release without the committed
+#     signature FAILS, it is never published unsigned.
 #
-# Required repository secrets (maintainer, one-time setup):
-#   MINISIGN_SECRET_KEY — contents of the release secret key file
-#                         (unencrypted variant recommended: `minisign -C -W`)
-#   MINISIGN_PASSWORD   — its password (empty string for a -W key)
-# Until the secrets exist the workflow still publishes artifacts, marked
-# UNSIGNED via a job warning — never ship such a release silently.
+# Verification step:
+#   1. release/SHA256SUMS.minisig must exist for the pushed tag,
+#   2. minisign -Vm release/SHA256SUMS -p docs/release.pub must pass,
+#   3. the CI-built binary's checksums must equal the committed ones
+#      (sha256sum -c) — the reproducibility audit that ties the locally
+#      signed artifact to what this workflow built.
 
 name: release
 
@@ -21,6 +25,7 @@ on:
 
 permissions:
   contents: write
+  id-token: none
 
 env:
   BIN: demo-ghostprovider
@@ -37,7 +42,7 @@ jobs:
       VERSION: ${{ github.ref_name }}
       # Fixed build locations, identical to scripts/release-local.sh: rustc
       # embeds absolute paths (registry sources, crate root) into the binary,
-      # so /cargo + /src are what makes local and CI builds byte-identical.
+      # so /cargo + /src are what make local and CI builds byte-identical.
       CARGO_HOME: /cargo
     steps:
       - name: Install pinned toolchain
@@ -49,7 +54,8 @@ jobs:
           rustup default 1.98.0
           rustup target add x86_64-unknown-linux-musl
 
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Build (--locked, static)
         run: |
@@ -67,27 +73,34 @@ jobs:
              "dist/${BIN}-${VERSION}-x86_64-linux-musl"
           ( cd dist && sha256sum "${BIN}-${VERSION}-x86_64-linux-musl" > SHA256SUMS )
 
-      - name: Sign checksums (minisign)
-        env:
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+      - name: Verify committed signature + reproducible checksums
         run: |
           set -eu
-          if [ -z "${MINISIGN_SECRET_KEY}" ]; then
-            echo "::warning::MINISIGN_SECRET_KEY is not configured — publishing UNSIGNED artifacts."
-            exit 0
-          fi
-          umask 077
-          printf '%s\n' "${MINISIGN_SECRET_KEY}" > release.key
-          printf '%s\n' "${MINISIGN_PASSWORD}" > release.pw
-          # minisign reads the passphrase from stdin when no tty is attached;
-          # an empty line satisfies an unencrypted (-W) key as well.
-          minisign -Sm "dist/SHA256SUMS" -s release.key < release.pw
-          rm -f release.key release.pw
-          echo "signed:"; cat "dist/SHA256SUMS.minisig"
+          test -f release/SHA256SUMS || {
+            echo "::error::release/SHA256SUMS is missing. Releases must be signed locally (scripts/release-local.sh --sign) and release/SHA256SUMS committed before pushing the tag."
+            exit 1
+          }
+          test -f release/SHA256SUMS.minisig || {
+            echo "::error::release/SHA256SUMS.minisig is missing. Local-only signing policy: an unsigned release is refused, never published."
+            exit 1
+          }
+          echo "::group::Verifying minisign signature (docs/release.pub)"
+          minisign -Vm release/SHA256SUMS -p docs/release.pub || {
+            echo "::error::signature verification failed for release/SHA256SUMS"
+            exit 1
+          }
+          echo "::endgroup::"
+          echo "::group::Reproducibility: CI-built checksums must match the signed, committed ones"
+          # dist/SHA256SUMS is what this workflow computed; the signed file is
+          # what a maintainer computed locally. Byte-identical builds ⇒ equal.
+          ( cd dist && sha256sum -c ../release/SHA256SUMS ) || {
+            echo "::error::CI-produced binary does not match the locally signed checksums (non-reproducible build?)"
+            exit 1
+          }
+          echo "::endgroup::"
 
       - name: Attach to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           # Publish under the maintainer identity instead of
           # github-actions[bot]; Contents RW on this repo is sufficient.
@@ -95,8 +108,7 @@ jobs:
           # Auto-notes from commit history; a curated body in the tag's
           # annotated message would win if we ever add one.
           generate_release_notes: true
-          # dist/* = binary + SHA256SUMS (+ .minisig once signing secrets
-          # are configured); keeps fail_on_unmatched_files meaningful in
-          # both signed and UNSIGNED mode.
+          # dist/* = binary + SHA256SUMS computed by THIS run. The signed
+          # release/SHA256SUMS(.minisig) were already verified above.
           fail_on_unmatched_files: true
           files: dist/*

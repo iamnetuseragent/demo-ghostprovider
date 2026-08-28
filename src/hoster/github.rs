@@ -4,11 +4,11 @@ use serde::Deserialize;
 
 use super::httpclient::get_text;
 
-/// Matches `https?://github.com/<owner>/<name>(.git)?/?` exactly.
+/// Matches `https://github.com/<owner>/<name>(.git)?/?` exactly. Plaintext
+/// `http://` is refused: it would downgrade authentication and could never
+/// pass the client's https-only gate anyway.
 pub fn parse_github_url(url: &str) -> Option<(String, String)> {
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))?;
+    let rest = url.strip_prefix("https://")?;
     let rest = rest.strip_prefix("github.com/")?;
 
     // Reject anything with extra path segments, query or fragment parts.
@@ -87,6 +87,7 @@ mod tests {
     #[test]
     fn rejects_malformed_urls() {
         for url in [
+            "http://github.com/a/b",
             "https://gitlab.com/a/b",
             "https://github.com/a/b/tree/main",
             "https://github.com/a",

@@ -94,6 +94,13 @@ impl Painter {
             )];
         }
         self.in_doctor = false;
+        if let Some(body) = t.strip_prefix("warn: ") {
+            return vec![format!(
+                " {} {}",
+                self.paint(WARN, "!"),
+                self.paint(WARN, body)
+            )];
+        }
         if let Some(url) = t.strip_prefix("listening on ") {
             return vec![format!(
                 " {} {}",

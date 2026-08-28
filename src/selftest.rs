@@ -35,6 +35,7 @@ pub fn run() -> anyhow::Result<()> {
         description: "demo-ghostprovider self-test",
         env_file: None,
         extra_env: &[],
+        loopback_only: true,
     };
     units::create_unit(&spec).context("unit creation")?;
 

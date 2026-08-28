@@ -1071,6 +1071,17 @@ fn log_lines(line: &str) -> Vec<Line<'static>> {
             Span::styled(body.to_string(), Style::default().fg(ERR_RED)),
         ])];
     }
+    if let Some(body) = s.strip_prefix("warn: ") {
+        return vec![Line::from(vec![
+            Span::styled(
+                " ! ".to_string(),
+                Style::default()
+                    .fg(WARN_YELLOW)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(body.to_string(), Style::default().fg(WARN_YELLOW)),
+        ])];
+    }
     if let Some(url) = s.strip_prefix("listening on ") {
         return vec![Line::from(vec![
             Span::styled(" ✔ listening on ", Style::default().fg(OK_GREEN)),

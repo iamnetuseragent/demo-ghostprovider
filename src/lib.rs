@@ -5,6 +5,8 @@
 //! allowlisted at compile time and logged locally (see [`netlog`]).
 
 pub mod analyzer;
+pub mod atomic;
+pub mod flags;
 pub mod hoster;
 pub mod netlog;
 pub mod output;
