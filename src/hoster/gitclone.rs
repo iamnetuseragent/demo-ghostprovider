@@ -8,8 +8,16 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 const CLONE_RETRIES: u32 = 3;
+/// Absolute ceiling for a single `git` invocation. git can hang with the
+/// socket open but zero bytes moving (stateful filters/firewalls that accept
+/// the TLS handshake and then drop the payload); `GIT_HTTP_LOW_SPEED_*` makes
+/// git give up on *our* behalf for HTTPS, this watchdog guarantees it even
+/// when the stall is inside the pack protocol where git's own low-speed
+/// handling does not apply.
+const CLONE_TIMEOUT: Duration = Duration::from_secs(90);
 
 fn git_env(askpass: Option<&Path>) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = std::env::vars().collect();
@@ -21,6 +29,11 @@ fn git_env(askpass: Option<&Path>) -> HashMap<String, String> {
         format!("demo-ghostprovider/{}", env!("CARGO_PKG_VERSION")),
     );
     env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
+    // Abort an HTTPS transfer that stalls below 1 byte/s for more than 20s
+    // instead of blocking the clone forever. The watchdog in
+    // run_git_with_timeout covers everything else (pack protocol, SSH).
+    env.insert("GIT_HTTP_LOW_SPEED_LIMIT".into(), "1".into());
+    env.insert("GIT_HTTP_LOW_SPEED_TIME".into(), "20".into());
     if let Some(p) = askpass {
         env.insert("GIT_ASKPASS".into(), p.to_string_lossy().into_owned());
     }
@@ -194,7 +207,7 @@ pub fn clone(url: &str, dest: &Path) -> CloneStatus {
 
     for attempt in 0..CLONE_RETRIES {
         let args = &strategies[(attempt % strategies.len() as u32) as usize];
-        match run_git(args, &env) {
+        match run_git_with_timeout(args, &env, CLONE_TIMEOUT) {
             Some(out) if out.status.success() && dest.join(".git").is_dir() => {
                 cleanup_askpass(askpass.as_deref());
                 return CloneStatus {
@@ -304,10 +317,96 @@ fn write_tarball_temp(data: &[u8]) -> Option<std::path::PathBuf> {
     None
 }
 
-fn run_git(args: &[String], env: &HashMap<String, String>) -> Option<std::process::Output> {
+fn run_git_with_timeout(
+    args: &[String],
+    env: &HashMap<String, String>,
+    timeout: Duration,
+) -> Option<std::process::Output> {
+    use std::process::Stdio;
     let mut cmd = Command::new("git");
-    cmd.args(args).env_clear().envs(env);
-    cmd.output().ok()
+    cmd.args(args)
+        .env_clear()
+        .envs(env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Own process group so the kill below takes down git-remote-* helpers
+        // too — killing only `git` would leak its helper's half-open socket.
+        cmd.process_group(0);
+    }
+    let child = cmd.spawn().ok()?;
+    Some(run_with_timeout(child, timeout))
+}
+
+/// Poll `child` (stdout/stderr piped) until it exits; hard-kill its whole
+/// process group when `timeout` elapses first. Killed runs never report
+/// success and their piped stderr is still drained so no buffer deadlock or
+/// orphan persists.
+fn run_with_timeout(mut child: std::process::Child, timeout: Duration) -> std::process::Output {
+    let pid = child.id();
+    let halt = std::time::Instant::now() + timeout;
+    #[cfg(unix)]
+    let group = i32::try_from(pid).ok(); // kill(-pid) needs a signed pid
+    let timed_out = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break false,
+            Ok(None) => {}
+            Err(_) => break false,
+        }
+        if std::time::Instant::now() >= halt {
+            break true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    if timed_out {
+        #[cfg(unix)]
+        if let Some(g) = group {
+            let _ = Command::new("kill")
+                .args(["-KILL", &format!("-{g}")])
+                .status();
+        }
+        #[cfg(not(unix))]
+        let _ = child.kill();
+        let drained = child.wait_with_output().ok();
+        let mut stderr = format!(
+            "git timed out after {}s (network stalled?)",
+            timeout.as_secs()
+        );
+        if let Some(out) = drained {
+            if !out.stderr.is_empty() {
+                stderr.push_str(": ");
+                stderr.push_str(&String::from_utf8_lossy(&out.stderr));
+            }
+        }
+        return std::process::Output {
+            status: exit_failure(),
+            stdout: Vec::new(),
+            stderr: stderr.into_bytes(),
+        };
+    }
+    child
+        .wait_with_output()
+        .unwrap_or_else(|e| std::process::Output {
+            status: exit_failure(),
+            stdout: Vec::new(),
+            stderr: format!("{e}").into_bytes(),
+        })
+}
+
+#[cfg(unix)]
+fn exit_failure() -> std::process::ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    // 128+SIGKILL mirrors what a shell reports for a killed process.
+    std::process::ExitStatus::from_raw(137)
+}
+
+#[cfg(not(unix))]
+fn exit_failure() -> std::process::ExitStatus {
+    use std::os::windows::process::ExitStatusExt;
+    std::process::ExitStatus::from_raw(1)
 }
 
 fn cleanup_askpass(path: Option<&std::path::Path>) {
@@ -395,5 +494,51 @@ mod tests {
         std::env::var_os("PATH")
             .map(|p| std::env::split_paths(&p).any(|dir| dir.join("git").is_file()))
             .unwrap_or(false)
+    }
+
+    /// A process that never exits must be killed by the watchdog: quick,
+    /// exit status non-success, and the whole process group goes down.
+    #[test]
+    fn watchdog_kills_hung_process_group() {
+        use std::process::Stdio;
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let child = cmd.spawn().unwrap();
+        let start = std::time::Instant::now();
+        let out = run_with_timeout(child, Duration::from_millis(300));
+        assert!(!out.status.success());
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "watchdog must fire well before the sleep would end"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("timed out"),
+            "stderr must explain the timeout: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A quick success is untouched by the timeout machinery.
+    #[test]
+    fn watchdog_passes_fast_success() {
+        use std::process::Stdio;
+        let cmd = Command::new("echo")
+            .arg("ok")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = run_with_timeout(cmd, Duration::from_secs(30));
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
     }
 }
