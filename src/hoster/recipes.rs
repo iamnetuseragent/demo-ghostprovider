@@ -1,4 +1,4 @@
-//! Curated demo catalog — exactly three supported services.
+//! Curated demo catalog — a small set of supported services.
 //!
 //! demo_ghostprovider does not host arbitrary repositories. Each entry is a
 //! hardcoded deploy recipe for one specific public service. `tools` lists the
@@ -76,7 +76,7 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         display_name: "Memos",
         pre_build: &[],
         build_steps: &[
-            "pnpm --dir web install",
+            "pnpm --dir web install --fetch-timeout=600000",
             "pnpm --dir web release",
             "go build -o ghost-server ./cmd/memos",
         ],
@@ -85,6 +85,21 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         searxng: false,
         tools: &["pnpm", "go"],
         loopback_only: false,
+    },
+    DemoRecipe {
+        owner: "sveltejs",
+        name: "template",
+        language: "JavaScript",
+        service_name: "demo-svelte",
+        description: "Svelte starter template — official static site starter",
+        display_name: "Svelte Template",
+        pre_build: &[],
+        build_steps: &["bun install", "bun run build"],
+        start_cmd: "{self} __serve-static {project}/public {port}",
+        port: 0,
+        searxng: false,
+        tools: &["bun"],
+        loopback_only: true,
     },
 ];
 
@@ -100,14 +115,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_has_exactly_three_services() {
-        assert_eq!(DEMO_SERVICES.len(), 3);
+    fn catalog_has_four_services() {
+        assert_eq!(DEMO_SERVICES.len(), 4);
         assert_eq!(
             DEMO_SERVICES
                 .iter()
                 .map(|r| r.service_name)
                 .collect::<Vec<_>>(),
-            vec!["demo-vert", "demo-searxng", "demo-memos"]
+            vec!["demo-vert", "demo-searxng", "demo-memos", "demo-svelte"]
         );
     }
 
@@ -116,6 +131,7 @@ mod tests {
         assert!(find_recipe("VERT-sh", "VERT").is_some());
         assert!(find_recipe("vert-sh", "vert").is_some());
         assert!(find_recipe("usememos", "memos").is_some());
+        assert!(find_recipe("sveltejs", "template").is_some());
         assert!(find_recipe("foo", "bar").is_none());
     }
 

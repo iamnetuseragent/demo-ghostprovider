@@ -1,6 +1,6 @@
 [package]
 name = "demo-ghostprovider"
-version = "0.0.14"
+version = "0.0.15"
 edition = "2024"
 rust-version = "1.85"
 description = "Local-first demo hosting panel: deploy three curated self-hosted services as hardened systemd user services. Rust rewrite of demo-ghostprovider."
@@ -9,6 +9,7 @@ license = "MIT"
 [dependencies]
 anyhow = "1"
 crossterm = "0.28"
+libc = "0.2"
 ratatui = "0.29"
 regex-lite = "0.1"
 serde = { version = "1", features = ["derive"] }
@@ -19,3 +20,5 @@ ureq = { version = "3", features = ["json"] }
 lto = true
 strip = true
 codegen-units = 1
+panic = "abort"
+opt-level = "z"

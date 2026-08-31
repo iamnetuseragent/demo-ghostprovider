@@ -12,7 +12,7 @@
 use std::path::Path;
 use std::process::Command;
 
-type Ver = (u32, u32, u32);
+pub(crate) type Ver = (u32, u32, u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tool {
@@ -50,13 +50,13 @@ impl Tool {
     }
 }
 
-fn v_str(v: Ver) -> String {
+pub(crate) fn v_str(v: Ver) -> String {
     format!("{}.{}.{}", v.0, v.1, v.2)
 }
 
 /// Extract the leading dotted-number version from free-form probe output:
 /// "1.27.0", "go1.26.6", "v26.7.0", "Python 3.14.7", ">=3.12", "^20.1.2".
-fn parse_version(input: &str) -> Option<Ver> {
+pub(crate) fn parse_version(input: &str) -> Option<Ver> {
     let mut cur = String::new();
     for c in input.chars() {
         if c.is_ascii_digit() || c == '.' {

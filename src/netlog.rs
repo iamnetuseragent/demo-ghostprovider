@@ -21,8 +21,8 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 /// Hosts this binary may contact. Keep in sync with README "Security model";
-/// `test_allowed_endpoints_matches_docs` pins the exact contents, so adding
-/// a host without updating docs fails CI.
+/// `allowed_endpoints_match_security_model` pins the exact contents, so
+/// adding a host without updating docs fails CI.
 ///
 /// `codeload.github.com` is reachable only as the *redirect target* of
 /// `github.com/<owner>/<repo>/archive/*` downloads (the tarball fallback
@@ -30,11 +30,23 @@ use std::time::SystemTime;
 /// every redirect hop, so this entry is not a bypass — it is the explicit,
 /// net.log-visible permit for a host the GitHub archive flow genuinely
 /// needs.
+///
+/// `proxy.golang.org` + `storage.googleapis.com` exist for one purpose only:
+/// seeding the Go toolchain module into a local `file://` GOPROXY before a
+/// sandboxed build (`src/hoster/goenv.rs`), so a throttled link does not
+/// re-transfer the ~75 MiB zip on every deploy. `storage.googleapis.com` is
+/// the signed-URL redirect target of `proxy.golang.org` downloads. Every hop
+/// (this one included) is allowlist-gated and net.log-recorded like any
+/// other, and the fetched bytes are re-verified by `go` against its checksum
+/// database before extraction runs — this path only saves bytes, never
+/// trusts them.
 pub const ALLOWED_ENDPOINTS: &[&str] = &[
     "api.github.com",
     "github.com",
     "raw.githubusercontent.com",
     "codeload.github.com",
+    "proxy.golang.org",
+    "storage.googleapis.com",
 ];
 
 /// Hosts treated as loopback. Allowed only for *local health checks*
@@ -204,7 +216,9 @@ mod tests {
                 "api.github.com",
                 "github.com",
                 "raw.githubusercontent.com",
-                "codeload.github.com"
+                "codeload.github.com",
+                "proxy.golang.org",
+                "storage.googleapis.com"
             ],
             "allowlist changed — update README 'Security model' in the same commit"
         );

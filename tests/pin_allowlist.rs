@@ -14,7 +14,9 @@ fn allowlist_matches_documented_endpoints() {
             "api.github.com",
             "codeload.github.com",
             "github.com",
-            "raw.githubusercontent.com"
+            "proxy.golang.org",
+            "raw.githubusercontent.com",
+            "storage.googleapis.com"
         ],
         "ALLOWED_ENDPOINTS changed! Update README.md (Transparency section) \
          and this test in the same commit, and justify it publicly."

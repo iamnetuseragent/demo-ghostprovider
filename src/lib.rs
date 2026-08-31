@@ -15,3 +15,4 @@ pub mod selftest;
 pub mod serve;
 pub mod state;
 pub mod tui;
+pub mod verify;

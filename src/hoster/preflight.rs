@@ -32,13 +32,9 @@ pub fn preflight_check(tools: &[&str]) -> Vec<String> {
     }
 
     // ── network: github.com is what we actually need for clone/API.
-    // Recorded in the local net log like every other request. ──
-    match super::httpclient::get_text("https://github.com/") {
-        Ok(_) => {}
-        Err(e) => {
-            let _ = e; // avoid echoing response bodies into UI
-            issues.push("No network connectivity (https://github.com unreachable)".into());
-        }
+    // HEAD probe (no body to read), recorded in the local net log. ──
+    if !super::httpclient::head_ok("https://github.com/") {
+        issues.push("No network connectivity (https://github.com unreachable)".into());
     }
 
     // ── per-recipe build tools ──

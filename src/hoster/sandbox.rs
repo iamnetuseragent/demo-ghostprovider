@@ -30,7 +30,12 @@ const SANDBOX_PROPERTIES: &[&str] = &[
     "CapabilityBoundingSet=",
 ];
 
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(900);
+/// Per build-step budget. Generous because `bun install`/`pnpm install` on a
+/// throttled link can legitimately need many minutes to pull a large
+/// node_modules, and a `go build` may first bootstrap a missing toolchain via
+/// `GOTOOLCHAIN=auto` (~70 MiB fetch at link speeds measured here). Truly-hung
+/// steps are still reaped by RuntimeMaxSec.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(90 * 60);
 
 /// Env vars a build step must never inherit. The sandbox already constrains
 /// filesystem reach, but env vars are how a hostile build step would
@@ -44,6 +49,19 @@ const SCRUBBED_ENV_VARS: &[&str] = &[
     "DOCKER_AUTH_CONFIG",
     "BUN_AUTH_TOKEN",
 ];
+
+/// Variable-name patterns that identify credentials regardless of their exact
+/// name, so a future session secret cannot slip through a stale denylist.
+const SCRUBBED_ENV_PATTERNS: &[&str] = &["TOKEN", "PASSWORD", "SECRET", "OPENCHAMBER_", "OPENCODE_"];
+
+/// Whether an env-var name looks like a credential (token/password/secret or
+/// an openchamber/opencode session secret such as the agent-tool token).
+fn is_credential_name(name: &str) -> bool {
+    SCRUBBED_ENV_VARS.contains(&name)
+        || SCRUBBED_ENV_PATTERNS.iter().any(|p| {
+            name.contains(p) || name.to_ascii_uppercase().contains(p)
+        })
+}
 
 pub struct CmdResult {
     pub success: bool,
@@ -92,9 +110,7 @@ pub fn sandbox_warning() -> Option<&'static str> {
 
 /// Drop credential-bearing variables from a child environment.
 fn scrub_env(run_env: &mut BTreeMap<String, String>) {
-    for k in SCRUBBED_ENV_VARS {
-        run_env.remove(*k);
-    }
+    run_env.retain(|k, _| !is_credential_name(k));
 }
 
 fn cache_env(project_dir: Option<&Path>) -> BTreeMap<&'static str, String> {
@@ -131,7 +147,12 @@ fn precreate_cache_dirs(project_dir: &Path, env: &BTreeMap<&'static str, String>
 
 /// Run `argv` inside the hardened sandbox; falls back to plain execution when
 /// systemd-run is unavailable or the user manager rejects the unit.
-pub fn run_sandboxed(argv: &[String], cwd: &Path, timeout: Duration) -> anyhow::Result<CmdResult> {
+pub fn run_sandboxed(
+    argv: &[String],
+    cwd: &Path,
+    timeout: Duration,
+    extra_env: &[(String, String)],
+) -> anyhow::Result<CmdResult> {
     let mut run_env: BTreeMap<String, String> = std::env::vars().collect();
     // A hostile project's build step would inherit every credential in the
     // environment; scrub them before the git-clone rates-only token can leak.
@@ -139,6 +160,12 @@ pub fn run_sandboxed(argv: &[String], cwd: &Path, timeout: Duration) -> anyhow::
     let cache = cache_env(Some(cwd));
     for (k, v) in &cache {
         run_env.insert((*k).to_string(), v.clone());
+    }
+    // Explicit overrides (e.g. the toolchain file:// GOPROXY from goenv)
+    // win over any ambient ones — they are not credentials and go through
+    // the same 0600-backed cache directory as the tool caches.
+    for (k, v) in extra_env {
+        run_env.insert(k.clone(), v.clone());
     }
     // Keep the sandbox consistent with the tool doctor: when the doctor
     // allowed an old `go` because GOTOOLCHAIN=auto can fetch the required
@@ -226,6 +253,7 @@ fn is_timeout_result(stderr: &str) -> bool {
 pub fn run_build_cmd(
     cmd: &str,
     project_dir: &Path,
+    extra_env: &[(String, String)],
     on_status: Option<&dyn Fn(&str)>,
 ) -> anyhow::Result<CmdResult> {
     super::validate::validate_build_cmd(cmd)
@@ -240,6 +268,7 @@ pub fn run_build_cmd(
         &["/bin/sh".into(), "-c".into(), cmd.to_string()],
         project_dir,
         DEFAULT_TIMEOUT,
+        extra_env,
     )
 }
 
@@ -354,6 +383,9 @@ mod tests {
             ("NODE_AUTH_TOKEN".into(), "t4".into()),
             ("DOCKER_AUTH_CONFIG".into(), "t5".into()),
             ("BUN_AUTH_TOKEN".into(), "t6".into()),
+            ("OPENCHAMBER_AGENT_TOOL_TOKEN".into(), "t7".into()),
+            ("OPENCODE_SERVER_PASSWORD".into(), "t8".into()),
+            ("npm_config__authToken".into(), "t9".into()),
             ("PATH".into(), "/usr/bin".into()),
             ("HOME".into(), "/home/u".into()),
         ]);
@@ -364,6 +396,9 @@ mod tests {
         assert!(!env.contains_key("NODE_AUTH_TOKEN"));
         assert!(!env.contains_key("DOCKER_AUTH_CONFIG"));
         assert!(!env.contains_key("BUN_AUTH_TOKEN"));
+        assert!(!env.contains_key("OPENCHAMBER_AGENT_TOOL_TOKEN"));
+        assert!(!env.contains_key("OPENCODE_SERVER_PASSWORD"));
+        assert!(!env.contains_key("npm_config__authToken"));
         // Benign vars survive untouched.
         assert_eq!(env.get("PATH"), Some(&"/usr/bin".to_string()));
         assert_eq!(env.get("HOME"), Some(&"/home/u".to_string()));

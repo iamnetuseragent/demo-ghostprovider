@@ -8,11 +8,13 @@
 //!   --selftest           E2E check against the live systemd user manager:
 //!                        installs a real unit running the static server,
 //!                        polls activation, health-checks it, cleans up
+//!   --verify-sandbox     audit the hardened build sandbox under strace:
+//!                        no outbound connects, no code-loading exec's
 //!   __serve-static DIR PORT   internal: static server used by deployed units
 
 use anyhow::Context;
 
-use demo_ghostprovider::{netlog, selftest, serve};
+use demo_ghostprovider::{netlog, selftest, serve, verify};
 
 /// Write to stdout, tolerating closed pipes (`| head`) without panicking.
 fn write_stdout(s: &str) {
@@ -55,6 +57,9 @@ fn main() -> anyhow::Result<()> {
         }
         Some("--selftest") => {
             selftest::run()?;
+        }
+        Some("--verify-sandbox") => {
+            verify::run()?;
         }
         // Internal subcommand used by generated systemd units. Not advertised.
         Some("__serve-static") => {
@@ -108,6 +113,7 @@ fn print_help() {
          \x20 demo-ghostprovider              launch the interactive panel\n\
          \x20 demo-ghostprovider --show-endpoints   transparency: allowlist + session counters\n\
          \x20 demo-ghostprovider --selftest           verify systemd integration on this machine\n\
+         \x20 demo-ghostprovider --verify-sandbox       audit the build sandbox (needs strace)\n\
          \x20 demo-ghostprovider --version          version",
         env!("CARGO_PKG_VERSION")
     );

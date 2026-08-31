@@ -1,4 +1,4 @@
-//! Deploy sequence for the three curated demo services.
+//! Deploy sequence for the curated demo services.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -248,14 +248,37 @@ pub fn deploy_service(
     }
 
     // ── build ──
+    // Go services: pre-seed the toolchain module into a file:// GOPROXY
+    // (resumable Range fetch) so GOTOOLCHAIN=auto does not re-download the
+    // ~75 MiB zip on every deploy. Nothing happens for other languages or
+    // when go.mod is already satisfied.
+    let go_env = if recipe.language == "Go" {
+        super::goenv::go_toolchain_env(&project_dir).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    // Go services: also pre-seed the module cache (every h1: zip in go.sum,
+    // parallel and resumable) so `go build` does not serialize hundreds of
+    // downloads behind one socket on slow links. Best-effort: if this trips,
+    // `go` simply re-fetches whatever it still needs inside the build step.
+    if recipe.language == "Go" {
+        match super::goenv::seed_go_modules(&project_dir) {
+            Ok(n) => emit(&format!("build: seeded Go module cache ({} module(s) ready)", n)),
+            Err(e) => emit(&format!("build: module cache seed incomplete ({e})")),
+        }
+    }
     for step in recipe.pre_build.iter().chain(recipe.build_steps.iter()) {
         emit(&format!("build: {}", short_cmd(step)));
-        match run_build_cmd(step, &project_dir, None) {
+        match run_build_cmd(step, &project_dir, &go_env, None) {
             Ok(r) if r.success => {}
             Ok(r) => {
                 report_err(
                     &mut result,
-                    format!("Build step failed ({step}):\n{}", short(&r.stderr)),
+                    format!(
+                        "Build step failed ({step}):\n{}{}",
+                        short(&r.stderr),
+                        tail(&r.stdout),
+                    ),
                 );
                 return result;
             }
@@ -487,6 +510,21 @@ pub fn remove_unit_and_state(service_name: &str) {
 
 fn short(s: &str) -> String {
     s.chars().take(300).collect()
+}
+
+/// The last few lines of a step's stdout, so a `pnpm`/`go` failure that
+/// printed to stdout (progress/error lines) is visible in the report even
+/// when stderr only carried the systemd-run status block.
+fn tail(s: &str) -> String {
+    let mut lines: Vec<&str> = s.lines().rev().take(12).collect();
+    lines.reverse();
+    let tail = lines.join("\n");
+    let tail = tail.chars().take(600).collect::<String>();
+    if tail.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n--- stdout (tail) ---\n{tail}")
+    }
 }
 
 fn short_cmd(s: &str) -> String {

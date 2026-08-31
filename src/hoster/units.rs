@@ -138,9 +138,11 @@ pub fn create_unit(spec: &UnitSpec) -> anyhow::Result<()> {
         "[Unit]\nDescription={desc}\nAfter=network.target\n\n\
           [Service]\nType=simple\nWorkingDirectory={working}\nExecStart={exec}\n\
           Restart=always\nRestartSec=5\n{env_lines}{env_file_line}\n\
-          # A service must never inherit ambient CI credentials (GITHUB_TOKEN,
-          # GH_TOKEN, package-manager tokens) via the manager environment.\n\
-         UnsetEnvironment=GITHUB_TOKEN GH_TOKEN NPM_TOKEN NODE_AUTH_TOKEN DOCKER_AUTH_CONFIG BUN_AUTH_TOKEN\n\
+# A service must never inherit ambient CI credentials (GITHUB_TOKEN,
+              # GH_TOKEN, package-manager tokens, openchamber/opencode session
+              # secrets) via the manager environment. systemd rejects globs
+              # here, so the known names are enumerated explicitly.\n\
+         UnsetEnvironment=GITHUB_TOKEN GH_TOKEN NPM_TOKEN NODE_AUTH_TOKEN DOCKER_AUTH_CONFIG BUN_AUTH_TOKEN OPENCHAMBER_AGENT_TOOL_TOKEN OPENCHAMBER_TOKEN OPENCHAMBER_SESSION_ID OPENCODE_SERVER_PASSWORD OPENCODE_TOKEN OPENCODE_AUTH_TOKEN\n\
          # -- Privacy & Security Hardening --\n\
          NoNewPrivileges=yes\nProtectHome=read-only\nProtectSystem=full\n\
          ReadWritePaths=\"{working}\"\nEnvironment=\"XDG_CACHE_HOME={working}/.ghost-cache\"\n\

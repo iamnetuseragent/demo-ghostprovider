@@ -11,23 +11,29 @@ use std::process::Command;
 use std::time::Duration;
 
 const CLONE_RETRIES: u32 = 3;
-/// Absolute ceiling for a single `git` invocation. git can hang with the
-/// socket open but zero bytes moving (stateful filters/firewalls that accept
-/// the TLS handshake and then drop the payload); `GIT_HTTP_LOW_SPEED_*` makes
-/// git give up on *our* behalf for HTTPS, this watchdog guarantees it even
-/// when the stall is inside the pack protocol where git's own low-speed
-/// handling does not apply.
-const CLONE_TIMEOUT: Duration = Duration::from_secs(90);
+/// Absolute ceiling for a single `git` invocation. Truly dead HTTPS links
+/// abort themselves inside git via `GIT_HTTP_LOW_SPEED_*`; this watchdog is
+/// the backstop for the cases git cannot self-detect (pack-protocol stalls,
+/// SSH). It is deliberately generous so an alive-but-slow link (e.g. a
+/// rate-limited ~8KB/s path to GitHub) is allowed to finish instead of being
+/// killed mid-pack.
+const CLONE_TIMEOUT: Duration = Duration::from_secs(60 * 90);
 
 fn git_env(askpass: Option<&Path>) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = std::env::vars().collect();
     // Stable, honest UA: identify the tool instead of spoofing a browser.
-    env.insert("GIT_CONFIG_COUNT".into(), "1".into());
+    // HTTP/1.1 is forced: HTTP/2 multiplexed streams get hard-reset by some
+    // egress filters/firewalls mid-pack (observed "curl 92 ... stream reset"
+    // after a few MB), while a single HTTP/1.1 connection survives the same
+    // transfer. Cost is negligible for a depth-1/--single-branch clone.
+    env.insert("GIT_CONFIG_COUNT".into(), "2".into());
     env.insert("GIT_CONFIG_KEY_0".into(), "http.userAgent".into());
     env.insert(
         "GIT_CONFIG_VALUE_0".into(),
         format!("demo-ghostprovider/{}", env!("CARGO_PKG_VERSION")),
     );
+    env.insert("GIT_CONFIG_KEY_1".into(), "http.version".into());
+    env.insert("GIT_CONFIG_VALUE_1".into(), "HTTP/1.1".into());
     env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
     // Abort an HTTPS transfer that stalls below 1 byte/s for more than 20s
     // instead of blocking the clone forever. The watchdog in
@@ -176,6 +182,23 @@ pub fn clone(url: &str, dest: &Path) -> CloneStatus {
     }
     let _ = force_remove_all(dest);
 
+    // Primary strategy: materialize the working tree through api+raw, which
+    // works where per-flow throttling makes `git clone` or a codeload tarball
+    // crawl for tens of minutes and then die. Falls through to git/tarball
+    // when the raw path is unusable for a given repo.
+    match super::rawfetch::materialize(url, dest) {
+        Ok(()) => {
+            return CloneStatus {
+                ok: true,
+                last_message: "raw tree download complete".into(),
+            };
+        }
+        Err(e) => {
+            eprintln!("raw tree download failed: {}", short(&format!("{e:#}")));
+            let _ = force_remove_all(dest);
+        }
+    }
+
     let askpass = match write_askpass() {
         Ok(p) => p,
         Err(e) => {
@@ -246,7 +269,7 @@ fn tarball_fallback(url: &str, dest: &Path) -> CloneStatus {
         // Fetch through the allowlisted client so the download is net.log-accounted
         // and the token stays out of argv (it only ever rides an Authorization
         // header for api.github.com — never for tarball hosts).
-        let data = match super::httpclient::get_bytes(&tb) {
+        let data = match super::httpclient::get_bytes_slow(&tb) {
             Ok(bytes) if !bytes.is_empty() => bytes,
             _ => continue,
         };
@@ -336,6 +359,15 @@ fn run_git_with_timeout(
         // Own process group so the kill below takes down git-remote-* helpers
         // too — killing only `git` would leak its helper's half-open socket.
         cmd.process_group(0);
+        // If the parent (this process) dies or is hard-killed, the clone must
+        // not be orphaned with a half-open stream: SIGKILL it via PDEATHSIG.
+        // Unsafe: the closure only issues isolated async-signal-safe syscalls.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
     }
     let child = cmd.spawn().ok()?;
     Some(run_with_timeout(child, timeout))
