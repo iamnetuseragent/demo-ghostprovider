@@ -14,6 +14,11 @@ ignore = [
     # a hand-rolled civil_from_days). Upgrading time to 0.3.47 would bump MSRV
     # beyond our pinned 1.85. Not exploitable in this binary.
     "RUSTSEC-2026-0009",
+    # Transitive proc-macro pulled by ratatui (our TUI). We never call into it;
+    # it only exists to synthesize identifiers at compile time. The advisory is
+    # "unmaintained" with no patched release, and there is no drop-in swap short
+    # of replacing the TUI framework. Not exploitable in this binary.
+    "RUSTSEC-2024-0436",
 ]
 
 [bans]
@@ -29,5 +34,7 @@ allow = [
     "ISC",
     "MIT",
     "Unicode-3.0",
+    "Zlib",
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
