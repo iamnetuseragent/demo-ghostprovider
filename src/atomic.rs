@@ -76,7 +76,11 @@ pub fn random_hex(bytes: usize) -> std::io::Result<String> {
     use std::io::Read;
     let mut buf = vec![0u8; bytes];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
-    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+    let mut out = String::with_capacity(bytes * 2);
+    for b in &buf {
+        out.push_str(&format!("{b:02x}"));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
