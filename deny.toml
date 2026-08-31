@@ -17,7 +17,6 @@ ignore = [
 ]
 
 [bans]
-version = 2
 multiple-versions = "allow"
 
 [licenses]
