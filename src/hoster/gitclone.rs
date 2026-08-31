@@ -533,9 +533,14 @@ mod tests {
     #[test]
     fn watchdog_kills_hung_process_group() {
         use std::process::Stdio;
-        let mut cmd = Command::new("sleep");
-        cmd.arg("30")
-            .stdin(Stdio::null())
+        // `cat` with a piped (open) stdin and piped stdout blocks forever
+        // waiting for input that never arrives, so it can only ever be
+        // released by the watchdog. Unlike `sleep N` it never depends on
+        // wall-clock duration or on the runtime's sleep binary. (A null stdin
+        // would deliver EOF and make cat exit 0, which is exactly the case
+        // we must NOT be testing.)
+        let mut cmd = Command::new("cat");
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(unix)]
@@ -549,7 +554,7 @@ mod tests {
         assert!(!out.status.success());
         assert!(
             start.elapsed() < Duration::from_secs(5),
-            "watchdog must fire well before the sleep would end"
+            "watchdog must fire well before the child would end"
         );
         assert!(
             String::from_utf8_lossy(&out.stderr).contains("timed out"),
