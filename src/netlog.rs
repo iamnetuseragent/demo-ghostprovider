@@ -11,9 +11,10 @@
 //! 3. There is no runtime configuration and no code loading from the network.
 //!    Only repository *data* of the service being deployed moves.
 //!
-//! Build-time package registries (npm, PyPI, proxy.golang.org) are contacted
-//! by the *build tools of the deployed services*, not by this binary; that
-//! distinction is documented in README ("Security model").
+//! Build-time package registries (npm, PyPI, proxy.golang.org) are contacted by
+//! the *downloader tool* of the deployed services during the host-side prefetch
+//! phase (before the sandboxed build), not by this binary; that distinction is
+//! documented in README ("Security model"). See `src/hoster/prefetch.rs`.
 
 use std::collections::BTreeMap;
 use std::io::Write;

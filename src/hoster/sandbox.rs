@@ -37,6 +37,20 @@ const SANDBOX_PROPERTIES: &[&str] = &[
 /// steps are still reaped by RuntimeMaxSec.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(90 * 60);
 
+/// The build unit is fully offline. `PrivateNetwork=yes` places the transient
+/// unit in a private netns with only a loopback interface; `IPAddressDeny=any`
+/// makes even loopback chatter fail closed. This is the single most important
+/// isolation a *build* gets: a malicious `postinstall`, `build.rs`, `setup.py`
+/// or `Makefile` can no longer phone home — the network is gone at the systemd
+/// level, not merely blocked by a heuristic. Dependency downloads are moved
+/// *before* the sandbox (see `prefetch`), so the build itself never needs
+/// egress. This is why `--verify-sandbox`'s "no outbound connect" guarantee is
+/// now structural instead of observational.
+const BUILD_NETWORK_PROPERTIES: &[&str] = &[
+    "PrivateNetwork=yes",
+    "IPAddressDeny=any",
+];
+
 /// Env vars a build step must never inherit. The sandbox already constrains
 /// filesystem reach, but env vars are how a hostile build step would
 /// exfiltrate a deployment credential (GITHUB_TOKEN/GH_TOKEN are set by the
@@ -111,6 +125,13 @@ pub fn sandbox_warning() -> Option<&'static str> {
 /// Drop credential-bearing variables from a child environment.
 fn scrub_env(run_env: &mut BTreeMap<String, String>) {
     run_env.retain(|k, _| !is_credential_name(k));
+}
+
+/// The canonical list of credential variable names the sandbox (and the host
+/// prefetch runner) must never pass to a child process. Exposed so the
+/// prefetch phases scrub with the identical policy.
+pub fn sandbox_scrub_denylist() -> &'static [&'static str] {
+    SCRUBBED_ENV_VARS
 }
 
 fn cache_env(project_dir: Option<&Path>) -> BTreeMap<&'static str, String> {
@@ -197,6 +218,11 @@ pub fn run_sandboxed(
         format!("--working-directory={cwd_escaped}"),
     ];
     for prop in SANDBOX_PROPERTIES {
+        args.push(format!("--property={prop}"));
+    }
+    // Network isolation lives in its own property list so it reads clearly
+    // as the build boundary (see BUILD_NETWORK_PROPERTIES).
+    for prop in BUILD_NETWORK_PROPERTIES {
         args.push(format!("--property={prop}"));
     }
     args.push(format!("--property=ReadWritePaths=\"{cwd_escaped}\""));

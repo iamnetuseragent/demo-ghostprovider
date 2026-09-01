@@ -73,6 +73,13 @@ pub fn resolve_start(recipe: &DemoRecipe, project_dir: &Path, port: u16) -> Stri
     cmd
 }
 
+/// Fill the `{project}` placeholder in a build/prefetch step with the
+/// concrete project directory. Kept deliberately small (store/cache paths);
+/// the sandbox validates every command as it runs (see `validate.rs`).
+fn resolve_project_step(step: &str, project_dir: &Path) -> String {
+    step.replace("{project}", &project_dir.to_string_lossy())
+}
+
 /// Patch SearXNG settings.yml: real secret key, loopback bind, chosen port.
 fn prepare_searxng_config(project_dir: &Path, port: u16) -> anyhow::Result<()> {
     let settings = project_dir.join("searx/settings.yml");
@@ -251,16 +258,31 @@ pub fn deploy_service(
         return result;
     }
 
+    // ── prefetch (host phase, network available) ──
+    // Dependency caches are filled BEFORE the sandboxed build so the build
+    // itself can run offline under PrivateNetwork=yes. These are downloader
+    // commands only (see prefetch.rs); credentials are scrubbed, and no code
+    // fetched from a registry is executed on the host.
+    for step in recipe.prefetch_steps {
+        let resolved = resolve_project_step(step, &project_dir);
+        emit(&format!("build: prefetch {}", short_cmd(&resolved)));
+        if let Err(e) = super::prefetch::run_host_step(&resolved, &project_dir, &emit) {
+            // Best-effort until PrivateNetwork=yes is mandatory: a failed
+            // prefetch logs the failure and the build proceeds with whatever
+            // network it has — mirroring the pre-PN contract (see prefetch.rs).
+            emit(&format!("warn: prefetch failed ({e}) — build proceeds online"));
+        }
+    }
+
     // ── build ──
     // Go services: pre-seed the toolchain module into a file:// GOPROXY
     // (resumable Range fetch) so GOTOOLCHAIN=auto does not re-download the
     // ~75 MiB zip on every deploy. Nothing happens for other languages or
     // when go.mod is already satisfied.
-    let go_env = if recipe.language == "Go" {
-        super::goenv::go_toolchain_env(&project_dir).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let mut build_env: Vec<(String, String)> = Vec::new();
+    if recipe.language == "Go" {
+        build_env.extend(super::goenv::go_toolchain_env(&project_dir).unwrap_or_default());
+    }
     // Go services: also pre-seed the module cache (every h1: zip in go.sum,
     // parallel and resumable) so `go build` does not serialize hundreds of
     // downloads behind one socket on slow links. Best-effort: if this trips,
@@ -271,15 +293,22 @@ pub fn deploy_service(
             Err(e) => emit(&format!("build: module cache seed incomplete ({e})")),
         }
     }
+    // Python services: point pip at the pre-seeded wheelhouse so the
+    // sandboxed install runs with no index (offline). Empty if the wheelhouse
+    // (produced by the recipe's prefetch step) is not ready yet.
+    if recipe.language == "Python" {
+        build_env.extend(super::prefetch::pip_offline_env(&project_dir));
+    }
     for step in recipe.pre_build.iter().chain(recipe.build_steps.iter()) {
-        emit(&format!("build: {}", short_cmd(step)));
-        match run_build_cmd(step, &project_dir, &go_env, None) {
+        let resolved = resolve_project_step(step, &project_dir);
+        emit(&format!("build: {}", short_cmd(&resolved)));
+        match run_build_cmd(&resolved, &project_dir, &build_env, None) {
             Ok(r) if r.success => {}
             Ok(r) => {
                 report_err(
                     &mut result,
                     format!(
-                        "Build step failed ({step}):\n{}{}",
+                        "Build step failed ({resolved}):\n{}{}",
                         short(&r.stderr),
                         tail(&r.stdout),
                     ),
@@ -287,7 +316,7 @@ pub fn deploy_service(
                 return result;
             }
             Err(e) => {
-                report_err(&mut result, format!("Build step failed ({step}): {e}"));
+                report_err(&mut result, format!("Build step failed ({resolved}): {e}"));
                 return result;
             }
         }

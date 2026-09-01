@@ -8,6 +8,7 @@ pub mod httpclient;
 pub mod models;
 pub mod port;
 pub mod preflight;
+pub mod prefetch;
 pub mod rawfetch;
 pub mod recipes;
 pub mod sandbox;

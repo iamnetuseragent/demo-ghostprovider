@@ -17,6 +17,13 @@ pub struct DemoRecipe {
     pub display_name: &'static str,
     pub pre_build: &'static [&'static str],
     pub build_steps: &'static [&'static str],
+    /// Host-phase dependency pre-fetch steps, run BEFORE the sandboxed build
+    /// with network available (see `prefetch.rs`). These fill the tool caches
+    /// so each sandboxed build step below runs fully offline. They are
+    /// *downloader* commands, never the project's build code — a hostile
+    /// `setup.py`/`postinstall` is not executed on the host (see the security
+    /// invariant at the top of `prefetch.rs`).
+    pub prefetch_steps: &'static [&'static str],
     /// Placeholders: {bin} {venv} {python} {project} {port} {self}
     /// {self} expands to this binary — used by the built-in static server.
     pub start_cmd: &'static str,
@@ -40,7 +47,12 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         description: "VERT — next-generation file converter (Svelte)",
         display_name: "VERT",
         pre_build: &["if [ -f .env.example ] && [ ! -f .env ]; then cp .env.example .env; fi"],
-        build_steps: &["bun install", "bun run build"],
+        prefetch_steps: &["bun install --frozen-lockfile"],
+        // `bun install` stays in build too until PrivateNetwork is enforced:
+        // prefetch is best-effort pre-warming (cache hit makes the in-sandbox
+        // install a no-op network-wise), so a host prefetch failure never
+        // regresses a working online build. At flip-time we drop it from build.
+        build_steps: &["bun install --frozen-lockfile", "bun run build"],
         // Served by THIS binary (built-in static server) instead of shelling
         // out to `python -m http.server`: one less host dependency.
         start_cmd: "{self} __serve-static {project}/build {port}",
@@ -57,6 +69,10 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         description: "SearXNG — privacy-friendly metasearch engine (Python)",
         display_name: "SearXNG",
         pre_build: &[],
+        prefetch_steps: &[
+            "python3 -m pip download -r requirements.txt -d .ghost-cache/pip-wheelhouse --only-binary=:all:
+            && touch .ghost-cache/pip-wheelhouse/.done",
+        ],
         build_steps: &[
             "python3 -m venv --clear .venv",
             ".venv/bin/pip install --no-cache-dir -r requirements.txt",
@@ -75,8 +91,18 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         description: "Memos — self-hosted, open-source knowledge base (Go)",
         display_name: "Memos",
         pre_build: &[],
+        // pnpm fetch fills the virtual store from the lockfile WITHOUT
+        // building node_modules or running any lifecycle script; the sandboxed
+        // install then links node_modules from that warm store.
+        prefetch_steps: &[
+            "pnpm --dir web fetch --store-dir {project}/.ghost-cache/pnpm",
+        ],
         build_steps: &[
-            "pnpm --dir web install --fetch-timeout=600000",
+            // Online until PrivateNetwork is enforced: a store-dir install with
+            // a warm store barely touches the network, and a failed prefetch
+            // never regresses a working online build. At flip-time this
+            // becomes `--offline`.
+            "pnpm --dir web install --store-dir {project}/.ghost-cache/pnpm",
             "pnpm --dir web release",
             "go build -o ghost-server ./cmd/memos",
         ],
@@ -94,7 +120,8 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         description: "Svelte starter template — official static site starter",
         display_name: "Svelte Template",
         pre_build: &[],
-        build_steps: &["bun install", "bun run build"],
+        prefetch_steps: &["bun install --frozen-lockfile"],
+        build_steps: &["bun install --frozen-lockfile", "bun run build"],
         start_cmd: "{self} __serve-static {project}/public {port}",
         port: 0,
         searxng: false,
@@ -140,7 +167,12 @@ mod tests {
     #[test]
     fn every_declared_tool_covers_build_steps() {
         for r in DEMO_SERVICES {
-            for step in r.pre_build.iter().chain(r.build_steps.iter()) {
+            for step in r
+                .pre_build
+                .iter()
+                .chain(r.build_steps.iter())
+                .chain(r.prefetch_steps.iter())
+            {
                 let head = step.split_whitespace().next().unwrap();
                 let base = head.rsplit('/').next().unwrap();
                 if matches!(base, "bun" | "pnpm" | "go" | "python3") {
@@ -151,6 +183,24 @@ mod tests {
                         r.tools
                     );
                 }
+            }
+        }
+    }
+
+    /// Prefetch steps are downloaders, never executed in the sandbox; every
+    /// one of them references a tool the recipe declares.
+    #[test]
+    fn prefetch_steps_are_downloaders_and_covered() {
+        for r in DEMO_SERVICES {
+            for step in r.prefetch_steps {
+                let head = step.split_whitespace().next().unwrap();
+                let base = head.rsplit('/').next().unwrap();
+                assert!(
+                    r.tools.contains(&base),
+                    "{}: prefetch step '{step}' needs tool '{base}' not declared in {:?}",
+                    r.service_name,
+                    r.tools
+                );
             }
         }
     }
