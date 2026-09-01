@@ -48,11 +48,10 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         display_name: "VERT",
         pre_build: &["if [ -f .env.example ] && [ ! -f .env ]; then cp .env.example .env; fi"],
         prefetch_steps: &["bun install --frozen-lockfile"],
-        // `bun install` stays in build too until PrivateNetwork is enforced:
-        // prefetch is best-effort pre-warming (cache hit makes the in-sandbox
-        // install a no-op network-wise), so a host prefetch failure never
-        // regresses a working online build. At flip-time we drop it from build.
-        build_steps: &["bun install --frozen-lockfile", "bun run build"],
+        // PrivateNetwork is enforced: deps come ONLY from the host prefetch
+        // (which just ran `bun install` above, filling node_modules + cache).
+        // The sandboxed build itself is fully offline.
+        build_steps: &["bun run build"],
         // Served by THIS binary (built-in static server) instead of shelling
         // out to `python -m http.server`: one less host dependency.
         start_cmd: "{self} __serve-static {project}/build {port}",
@@ -70,8 +69,7 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         display_name: "SearXNG",
         pre_build: &[],
         prefetch_steps: &[
-            "python3 -m pip download -r requirements.txt -d .ghost-cache/pip-wheelhouse --only-binary=:all:
-            && touch .ghost-cache/pip-wheelhouse/.done",
+            "python3 -m pip download -r requirements.txt -d .ghost-cache/pip-wheelhouse --only-binary=:all: && touch .ghost-cache/pip-wheelhouse/.done",
         ],
         build_steps: &[
             "python3 -m venv --clear .venv",
@@ -93,16 +91,14 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         pre_build: &[],
         // pnpm fetch fills the virtual store from the lockfile WITHOUT
         // building node_modules or running any lifecycle script; the sandboxed
-        // install then links node_modules from that warm store.
+        // install links node_modules from that warm store, offline.
         prefetch_steps: &[
             "pnpm --dir web fetch --store-dir {project}/.ghost-cache/pnpm",
         ],
         build_steps: &[
-            // Online until PrivateNetwork is enforced: a store-dir install with
-            // a warm store barely touches the network, and a failed prefetch
-            // never regresses a working online build. At flip-time this
-            // becomes `--offline`.
-            "pnpm --dir web install --store-dir {project}/.ghost-cache/pnpm",
+            // PrivateNetwork is enforced: --offline is required since the
+            // store was filled by the prefetch (never reach the registry).
+            "pnpm --dir web install --offline --store-dir {project}/.ghost-cache/pnpm",
             "pnpm --dir web release",
             "go build -o ghost-server ./cmd/memos",
         ],
@@ -121,7 +117,8 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         display_name: "Svelte Template",
         pre_build: &[],
         prefetch_steps: &["bun install --frozen-lockfile"],
-        build_steps: &["bun install --frozen-lockfile", "bun run build"],
+        // PrivateNetwork is enforced: deps come only from the host prefetch.
+        build_steps: &["bun run build"],
         start_cmd: "{self} __serve-static {project}/public {port}",
         port: 0,
         searxng: false,

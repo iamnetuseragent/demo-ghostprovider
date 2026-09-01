@@ -262,40 +262,68 @@ pub fn deploy_service(
     // Dependency caches are filled BEFORE the sandboxed build so the build
     // itself can run offline under PrivateNetwork=yes. These are downloader
     // commands only (see prefetch.rs); credentials are scrubbed, and no code
-    // fetched from a registry is executed on the host.
+    // fetched from a registry is executed on the host. Failure here is fatal:
+    // the sandboxed build has no network, so without a filled cache it cannot
+    // produce a working tree — fail closed rather than build a broken service.
     for step in recipe.prefetch_steps {
         let resolved = resolve_project_step(step, &project_dir);
         emit(&format!("build: prefetch {}", short_cmd(&resolved)));
         if let Err(e) = super::prefetch::run_host_step(&resolved, &project_dir, &emit) {
-            // Best-effort until PrivateNetwork=yes is mandatory: a failed
-            // prefetch logs the failure and the build proceeds with whatever
-            // network it has — mirroring the pre-PN contract (see prefetch.rs).
-            emit(&format!("warn: prefetch failed ({e}) — build proceeds online"));
+            report_err(
+                &mut result,
+                format!(
+                    "Prefetch step failed ({resolved}): {e}\nThe build sandbox has PrivateNetwork=yes, so dependencies must be pre-fetched on the host; fix the fetch, then re-deploy."
+                ),
+            );
+            return result;
         }
     }
 
     // ── build ──
     // Go services: pre-seed the toolchain module into a file:// GOPROXY
     // (resumable Range fetch) so GOTOOLCHAIN=auto does not re-download the
-    // ~75 MiB zip on every deploy. Nothing happens for other languages or
-    // when go.mod is already satisfied.
+    // ~75 MiB zip on every deploy. This runs on the host (like the prefetch
+    // phase) and its failure is fatal: with PrivateNetwork=yes the sandboxed
+    // `go build` could not fetch the toolchain itself.
     let mut build_env: Vec<(String, String)> = Vec::new();
     if recipe.language == "Go" {
-        build_env.extend(super::goenv::go_toolchain_env(&project_dir).unwrap_or_default());
+        match super::goenv::go_toolchain_env(&project_dir) {
+            Ok(env) => build_env.extend(env),
+            Err(e) => {
+                report_err(
+                    &mut result,
+                    format!(
+                        "Go toolchain seed failed: {e:#}\nThe build sandbox has PrivateNetwork=yes; the toolchain must be pre-seeded on the host."
+                    ),
+                );
+                return result;
+            }
+        }
     }
     // Go services: also pre-seed the module cache (every h1: zip in go.sum,
-    // parallel and resumable) so `go build` does not serialize hundreds of
-    // downloads behind one socket on slow links. Best-effort: if this trips,
-    // `go` simply re-fetches whatever it still needs inside the build step.
+    // parallel and resumable). With PrivateNetwork=yes this is not a
+    // convenience — it is the only source modules will have.
     if recipe.language == "Go" {
         match super::goenv::seed_go_modules(&project_dir) {
             Ok(n) => emit(&format!("build: seeded Go module cache ({} module(s) ready)", n)),
-            Err(e) => emit(&format!("build: module cache seed incomplete ({e})")),
+            Err(e) => {
+                // Go services have no prefetch step for modules (the seeder
+                // IS the prefetch, running on the host with network). A
+                // partial seed leaves `go build` without egress, so fail
+                // closed exactly like the prefetch phase does.
+                report_err(
+                    &mut result,
+                    format!(
+                        "Go module cache seed failed: {e}\nThe build sandbox has PrivateNetwork=yes; modules must be fully pre-seeded on the host."
+                    ),
+                );
+                return result;
+            }
         }
     }
     // Python services: point pip at the pre-seeded wheelhouse so the
-    // sandboxed install runs with no index (offline). Empty if the wheelhouse
-    // (produced by the recipe's prefetch step) is not ready yet.
+    // sandboxed install runs with no index (offline). The wheelhouse MUST be
+    // complete here — the recipe's prefetch step failed closed otherwise.
     if recipe.language == "Python" {
         build_env.extend(super::prefetch::pip_offline_env(&project_dir));
     }

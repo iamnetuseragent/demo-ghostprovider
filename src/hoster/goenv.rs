@@ -70,14 +70,15 @@ pub fn go_toolchain_env(project_dir: &Path) -> anyhow::Result<Vec<(String, Strin
     std::fs::create_dir_all(&vdir).with_context(|| format!("creating {}", vdir.display()))?;
 
     let module = format!("golang.org/toolchain/@v/{tag}");
-    let zip_url = format!("https://proxy.golang.org/{module}.zip");
+    let module_esc = proxy_escape(&module);
+    let zip_url = format!("https://proxy.golang.org/{module_esc}.zip");
     let zip_path = vdir.join(format!("{tag}.zip"));
     fetch_zip(&zip_url, &zip_path)?;
 
     for ext in [".info", ".mod"] {
         let p = vdir.join(format!("{tag}{ext}"));
         if p.metadata().map(|m| m.len()).unwrap_or(0) == 0 {
-            let text = httpclient::get_text(&format!("https://proxy.golang.org/{module}{ext}"))?;
+            let text = httpclient::get_text(&format!("https://proxy.golang.org/{module_esc}{ext}"))?;
             write_bytes(&p, text.as_bytes())?;
         }
     }
@@ -114,6 +115,23 @@ fn go_env_key(key: &str) -> Option<String> {
     } else {
         Some(s.to_string())
     }
+}
+
+/// Encode a module path the way the Go module proxy URL requires:
+/// every uppercase ASCII letter becomes `!` + its lowercase form
+/// (golang.org/x/mod/module.EscapePath). The on-disk cache keeps the
+/// original case; only the request URL is escaped.
+fn proxy_escape(module: &str) -> String {
+    let mut out = String::with_capacity(module.len());
+    for ch in module.chars() {
+        if ch.is_ascii_uppercase() {
+            out.push('!');
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn go_env_version() -> Option<toolcheck::Ver> {
@@ -242,7 +260,11 @@ fn seed_one_module(
     h1: &str,
 ) -> anyhow::Result<()> {
     let vdir = cache.join(module).join("@v");
-    let base = format!("https://proxy.golang.org/{module}/@v/{ver}");
+    // The on-disk cache path uses the module's original case, but the Go
+    // module proxy encodes every uppercase letter as `!` + lowercase in the
+    // URL path (`golang.org/x/mod/module.EscapePath`). Sending the raw path
+    // returns 404 for any module with an uppercase segment (e.g. go-winio).
+    let base = format!("https://proxy.golang.org/{}/@v/{ver}", proxy_escape(module));
     std::fs::create_dir_all(&vdir).with_context(|| format!("creating {}", vdir.display()))?;
 
     let zip = vdir.join(format!("{ver}.zip"));
@@ -416,6 +438,22 @@ mod tests {
         assert!(have < need);
         assert!(have >= toolcheck::parse_version("1.18.8").unwrap());
         assert!(need >= need);
+    }
+
+    #[test]
+    fn escapes_uppercase_for_the_proxy() {
+        // go-winio lives in the cache under its real name but is fetched as
+        // the escaped path: the unescaped URL 404s on proxy.golang.org.
+        assert_eq!(
+            proxy_escape("github.com/Microsoft/go-winio"),
+            "github.com/!microsoft/go-winio"
+        );
+        assert_eq!(
+            proxy_escape("golang.org/toolchain/@v/v0.0.1-go1.27.0.linux-amd64"),
+            "golang.org/toolchain/@v/v0.0.1-go1.27.0.linux-amd64"
+        );
+        // Paths without uppercase are untouched.
+        assert_eq!(proxy_escape("github.com/foo/bar"), "github.com/foo/bar");
     }
 
     #[test]
