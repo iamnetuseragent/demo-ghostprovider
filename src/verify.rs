@@ -115,6 +115,22 @@ pub fn run() -> anyhow::Result<()> {
         println!("  {line}");
     }
 
+    let mut home_ok = true;
+    match probe_home() {
+        Ok(home) => {
+            let real = real_home();
+            println!("sandbox HOME: {home}");
+            println!("invoker HOME: {}", real.as_deref().unwrap_or("(unset)"));
+            if real.as_deref() == Some(home.as_str()) {
+                home_ok = false;
+            }
+        }
+        Err(e) => {
+            println!("WARN: could not probe sandbox HOME: {e:#}");
+        }
+    }
+
+    let ok = ok && home_ok && problems.is_empty();
     if ok {
         println!("SANDBOX VERIFY PASS");
         Ok(())
@@ -123,8 +139,40 @@ pub fn run() -> anyhow::Result<()> {
         for p in problems {
             eprintln!("  - {p}");
         }
+        if !home_ok {
+            eprintln!(
+                "  - sandbox '$HOME' leaked to the invoker's real home — a hostile build step could read ~/.ssh, ~/.netrc, ~/.config credentials"
+            );
+        }
         std::process::exit(1);
     }
+}
+
+/// Ask the sandbox itself what `$HOME` resolves to inside a hardened unit.
+fn probe_home() -> anyhow::Result<String> {
+    let work = std::env::temp_dir().join(format!(
+        "gp-sandbox-home-{}",
+        crate::atomic::random_hex(6)?
+    ));
+    std::fs::create_dir_all(&work)?;
+    let argv: Vec<String> = vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        "printf %s \"$HOME\"".into(),
+    ];
+    let result = run_sandboxed(&argv, &work, std::time::Duration::from_secs(60), &[]);
+    let _ = cleanup(&work);
+    match result {
+        Ok(c) if c.success => Ok(c.stdout.trim().to_string()),
+        Ok(c) => bail!("sandbox HOME probe failed (exit non-zero): {}", c.stderr.trim()),
+        Err(e) => Err(e),
+    }
+}
+
+fn real_home() -> Option<String> {
+    std::env::var_os("HOME")
+        .map(|h| h.to_string_lossy().into_owned())
+        .filter(|h| !h.is_empty())
 }
 
 /// Inspect a strace trace for forbidden outbound connects and forbidden

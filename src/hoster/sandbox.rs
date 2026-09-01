@@ -108,17 +108,104 @@ pub fn effective_mode() -> EffectiveSandbox {
     }
 }
 
+/// Env var naming the dedicated unprivileged build user (e.g. `ghostbuild`).
+/// When set *and* the current process can drop privileges to it (running as
+/// root), every build step is prefixed with `setpriv --reuid --regid
+/// --init-groups` so the sandboxed build runs as that user — a hostile recipe
+/// then cannot touch the invoker's files. When set but privilege-drop is not
+/// possible, we warn loudly instead of failing, because a non-root panel
+/// legitimately CANNOT chown to another uid (setpriv needs CAP_SETUID).
+pub const BUILD_USER_ENV: &str = "GHOSTPROVIDER_BUILD_USER";
+
+/// Opt-out of the "no dedicated build user" warning. When the panel runs as a
+/// non-root user (so it can never drop to another uid) and no build user is
+/// configured, builds run as the invoking user; that is the documented demo
+/// model, and the flag acknowledges it. Without it, the status line warns.
+pub const ALLOW_INSECURE_USER_ENV: &str = "GHOSTPROVIDER_ALLOW_INSECURE_USER";
+
+/// Prefix for the build argv when running as a dedicated build user; `None`
+/// when no privilege drop is in effect (current-user build).
+fn build_user_prefix() -> Option<Vec<String>> {
+    let name = std::env::var(BUILD_USER_ENV).unwrap_or_default();
+    if name.is_empty() {
+        return None;
+    }
+    // Only a privileged process can drop to another uid. For a regular user
+    // setpriv would EPERM on --reuid; detect and bail to the warning path.
+    if unsafe { libc::geteuid() } != 0 {
+        return None;
+    }
+    let uv = user_uid(name.trim())?;
+    let gv = group_gid(name.trim())?;
+    Some(vec![
+        "setpriv".into(),
+        format!("--reuid={uv}"),
+        format!("--regid={gv}"),
+        "--init-groups".into(),
+        "--".into(),
+    ])
+}
+
+/// Whether a dedicated build user is configured but unusable from this
+/// process (the reason `build_user_prefix` returned None with the env set).
+fn build_user_unusable_reason() -> Option<&'static str> {
+    let name = std::env::var(BUILD_USER_ENV).unwrap_or_default();
+    if name.is_empty() {
+        return None;
+    }
+    if unsafe { libc::geteuid() } != 0 {
+        return Some(
+            "GHOSTPROVIDER_BUILD_USER set, but dropping privileges needs root — builds run as the invoking user",
+        );
+    }
+    if user_uid(name.trim()).is_none() || group_gid(name.trim()).is_none() {
+        return Some(
+            "GHOSTPROVIDER_BUILD_USER set, but that user does not exist — builds run as the invoking user",
+        );
+    }
+    None
+}
+
+fn user_uid(name: &str) -> Option<u32> {
+    let out = Command::new("id").arg("-u").arg(name).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+fn group_gid(name: &str) -> Option<u32> {
+    let out = Command::new("id").arg("-g").arg(name).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
 /// Human-readable warning shown on the status line whenever a build will NOT
 /// run inside the hardened sandbox. `None` means full isolation is active.
 pub fn sandbox_warning() -> Option<&'static str> {
     match effective_mode() {
-        EffectiveSandbox::Full => None,
+        EffectiveSandbox::Full => {}
         EffectiveSandbox::DisabledByEnv => {
-            Some("sandbox DISABLED by GHOSTPROVIDER_NO_SANDBOX — builds run with no isolation")
+            return Some("sandbox DISABLED by GHOSTPROVIDER_NO_SANDBOX — builds run with no isolation");
         }
         EffectiveSandbox::FallbackPlain => {
-            Some("systemd-run not found — builds run with no isolation")
+            return Some("systemd-run not found — builds run with no isolation");
         }
+    }
+    if let Some(reason) = build_user_unusable_reason() {
+        return Some(reason);
+    }
+    // Neither sandbox-disabled nor build-user-configured: builds run as the
+    // invoking user. That is the documented demo model for a non-root panel;
+    // acknowledged via GHOSTPROVIDER_ALLOW_INSECURE_USER or surfaced loudly.
+    if !crate::flags::env_flag(ALLOW_INSECURE_USER_ENV) {
+        Some(
+            "no dedicated build user (GHOSTPROVIDER_BUILD_USER) — builds run as the invoking user",
+        )
+    } else {
+        None
     }
 }
 
@@ -153,6 +240,11 @@ fn cache_env(project_dir: Option<&Path>) -> BTreeMap<&'static str, String> {
         ("npm_config_store_dir", m("pnpm")),
         ("PNPM_HOME", m("pnpm-home")),
         ("TMPDIR", m("tmp")),
+        // HOME is re-pointed inside the sandbox so a hostile build step cannot
+        // read the invoking user's real home (~/.ssh, ~/.netrc, ~/.config with
+        // whatever session tokens live there). The redirect target itself is a
+        // scratch dir under the project, only populated by the build step.
+        ("HOME", m("home")),
     ])
 }
 
@@ -163,6 +255,15 @@ fn precreate_cache_dirs(project_dir: &Path, env: &BTreeMap<&'static str, String>
     let _ = std::fs::create_dir_all(project_dir.join(".ghost-cache"));
     for p in env.values() {
         let _ = std::fs::create_dir_all(p);
+    }
+}
+
+/// Prefix `argv` with `setpriv --reuid=... --regid=... --init-groups` when a
+/// dedicated build user is configured and usable; otherwise return it as-is.
+fn with_build_user_prefix(argv: &[String]) -> Vec<String> {
+    match build_user_prefix() {
+        Some(p) => p.iter().cloned().chain(argv.iter().cloned()).collect(),
+        None => argv.to_vec(),
     }
 }
 
@@ -197,9 +298,11 @@ pub fn run_sandboxed(
     precreate_cache_dirs(cwd, &cache);
 
     if !sandbox_enabled() || !which("systemd-run") {
-        return run_plain(argv, cwd, &run_env, timeout);
+        let argv = with_build_user_prefix(argv);
+        return run_plain(&argv, cwd, &run_env, timeout);
     }
 
+    let argv = with_build_user_prefix(argv);
     let unit = format!(
         "ghost-build-{}.service",
         crate::atomic::random_hex(4).unwrap_or_default()
@@ -246,7 +349,7 @@ pub fn run_sandboxed(
             let started = stderr.to_lowercase().contains("running as unit");
             if !status.map(|s| s.success()).unwrap_or(false) && !started {
                 // Unit never ran (no user manager / DBus): execute directly.
-                return run_plain(argv, cwd, &run_env, timeout);
+                return run_plain(&argv, cwd, &run_env, timeout);
             }
             let stderr = strip_status_preamble(&stderr);
             let stderr = if is_timeout_result(&stderr) {
@@ -263,7 +366,7 @@ pub fn run_sandboxed(
         // An explicit timeout is a hard failure — do NOT fall back to plain
         // execution (which would only re-run the same hung build).
         Err(e) if e.is::<TimedOut>() => Err(e),
-        Err(_) => run_plain(argv, cwd, &run_env, timeout),
+        Err(_) => run_plain(&argv, cwd, &run_env, timeout),
     }
 }
 
@@ -443,5 +546,32 @@ mod tests {
         assert!(is_timeout_result("Failed with result 'timeout'."));
         assert!(!is_timeout_result("curl: (28) Operation timed out"));
         assert!(!is_timeout_result("OK"));
+    }
+
+    #[test]
+    fn cache_env_redirects_home_into_project() {
+        let env = cache_env(Some(Path::new("/proj")));
+        let home = env.get("HOME").map(|s| s.as_str());
+        assert!(matches!(home, Some(h) if h.starts_with("/proj/.ghost-cache/")));
+        assert!(!matches!(home, Some(h) if h.starts_with("/home/")));
+        let pnpm = env.get("npm_config_store_dir").map(|s| s.as_str());
+        assert!(matches!(pnpm, Some(p) if p.starts_with("/proj/.ghost-cache/")));
+    }
+
+    #[test]
+    fn build_user_ignored_for_non_root() {
+        // Non-root (this test runs as an unprivileged user in CI/CI-less run):
+        // the prefix must be None, and the warning must explain why.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        unsafe {
+            std::env::set_var(BUILD_USER_ENV, "ghostbuild");
+        }
+        assert!(build_user_prefix().is_none());
+        assert!(build_user_unusable_reason().is_some());
+        unsafe {
+            std::env::remove_var(BUILD_USER_ENV);
+        }
     }
 }
