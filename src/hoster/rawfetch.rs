@@ -488,15 +488,28 @@ fn init_git(dest: &Path, branch: &str) -> anyhow::Result<()> {
 /// Materialize the tree of `url` into `dest`. `dest` must be dedicated to
 /// this call: any failure removes it wholesale, and on success it holds a
 /// committed git repo (matching `clone()`'s contract).
-pub(crate) fn materialize(url: &str, dest: &Path) -> anyhow::Result<()> {
+///
+/// `pin` selects which ref to build from. `Some(sha)` builds exactly that
+/// commit's tree: the API tree listing and every blob download address
+/// `raw.githubusercontent.com/.../<sha>/...`, so a materialized tree is
+/// *provably* the pinned commit — no git protocol, nothing to drift; a pin
+/// that won't resolve is an error. `None` keeps the old behavior: resolve the
+/// default branch and build its tip (used for unpinned / ad-hoc clones). In
+/// both cases the winning refname is recorded in `.ghost-source-pin` so a
+/// later reuse can verify it matches the recipe.
+pub(crate) fn materialize(url: &str, dest: &Path, pin: Option<&str>) -> anyhow::Result<()> {
     let (owner, repo) =
         github_repo(url).ok_or_else(|| anyhow!("not a github.com repository URL: {url}"))?;
-    let branch = resolve_branch(&owner, &repo)?;
-    let files = collect_files(&owner, &repo, &branch)?;
+    let refname = match pin {
+        Some(sha) => sha.to_string(),
+        None => resolve_branch(&owner, &repo)?,
+    };
+    let files = collect_files(&owner, &repo, &refname)?;
     eprintln!(
-        "raw: {} files, {} MiB, branch {branch}",
+        "raw: {} files, {} MiB, ref {}",
         files.len(),
-        files.iter().map(|(_, s)| *s).sum::<u64>() / (1024 * 1024)
+        files.iter().map(|(_, s)| *s).sum::<u64>() / (1024 * 1024),
+        refname
     );
 
     let specs: Arc<Vec<Spec>> = Arc::new(
@@ -522,7 +535,7 @@ pub(crate) fn materialize(url: &str, dest: &Path) -> anyhow::Result<()> {
 
     let aborted = Arc::new(AtomicBool::new(false));
     let stage = (
-        fetch_all(&owner, &repo, &branch, &specs, &staging, &aborted),
+        fetch_all(&owner, &repo, &refname, &specs, &staging, &aborted),
         assemble(&specs, &staging, dest),
     );
     if let Err(e) = stage.0.and(stage.1) {
@@ -531,10 +544,30 @@ pub(crate) fn materialize(url: &str, dest: &Path) -> anyhow::Result<()> {
     }
 
     let _ = super::gitclone::force_remove_all(&staging);
-    if let Err(e) = init_git(dest, &branch) {
+    if let Err(e) = init_git(dest, &refname) {
         eprintln!("note: finalizing the local git repo failed: {e:#}");
     }
+    // Record the ref this tree was built from. For a pinned clone this is the
+    // looked-up SHA; `clone()`'s reuse path refuses to serve a checkout whose
+    // marker does not match the requested pin.
+    let _ = std::fs::write(
+        dest.join(super::gitclone::PIN_MARKER_FILE),
+        format!("{refname}\n"),
+    );
     Ok(())
+}
+
+/// Read the `.ghost-source-pin` marker left by `materialize`. Returns the ref
+/// (SNA/branch name) the tree was built from, or `None` for an unpinned or
+/// legacy clone. Local only — never touches the network.
+pub(crate) fn pinned_sha(dir: &Path) -> Option<String> {
+    let marker = dir.join(super::gitclone::PIN_MARKER_FILE);
+    let content = std::fs::read_to_string(marker).ok()?;
+    let s = content.trim();
+    if s.is_empty() {
+        return None;
+    }
+    Some(s.to_string())
 }
 
 #[cfg(test)]

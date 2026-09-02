@@ -11,6 +11,9 @@ use std::process::Command;
 use std::time::Duration;
 
 const CLONE_RETRIES: u32 = 3;
+/// Name of the marker (inside a checkout) that records which SHA the tree was
+/// materialized from. Written by the raw materializer, read on reuse.
+pub const PIN_MARKER_FILE: &str = ".ghost-source-pin";
 /// Absolute ceiling for a single `git` invocation. Truly dead HTTPS links
 /// abort themselves inside git via `GIT_HTTP_LOW_SPEED_*`; this watchdog is
 /// the backstop for the cases git cannot self-detect (pack-protocol stalls,
@@ -168,13 +171,35 @@ fn worktree_intact(dest: &Path) -> bool {
 }
 
 /// Clone `url` into `dest`. Returns immediately when the repo already exists.
-pub fn clone(url: &str, dest: &Path) -> CloneStatus {
+pub fn clone(url: &str, dest: &Path, pin: Option<&str>) -> CloneStatus {
     if dest.join(".git").is_dir() {
         if worktree_intact(dest) {
-            return CloneStatus {
-                ok: true,
-                last_message: "already cloned".into(),
-            };
+            // A reuse is only valid if it honours the same pin. An unpinned
+            // legacy checkout (built at branch tip) must not be reused for a
+            // now-pinned recipe — that would be exactly the TOFU the pin
+            // exists to prevent.
+            match (pin, super::rawfetch::pinned_sha(dest)) {
+                (Some(want), Some(have)) if want == have => {
+                    return CloneStatus {
+                        ok: true,
+                        last_message: "already cloned (pinned)".into(),
+                    };
+                }
+                (Some(want), Some(have)) => {
+                    eprintln!(
+                        "clone: existing checkout is pinned to {have}, requested {want} — recloning"
+                    );
+                }
+                (Some(_), None) => {
+                    eprintln!("clone: existing checkout is unpinned, requested pin — recloning");
+                }
+                (None, _) => {
+                    return CloneStatus {
+                        ok: true,
+                        last_message: "already cloned".into(),
+                    };
+                }
+            }
         }
         // Broken checkout: start over instead of failing the build later.
         eprintln!("clone: existing copy is incomplete — recloning");
@@ -184,9 +209,14 @@ pub fn clone(url: &str, dest: &Path) -> CloneStatus {
 
     // Primary strategy: materialize the working tree through api+raw, which
     // works where per-flow throttling makes `git clone` or a codeload tarball
-    // crawl for tens of minutes and then die. Falls through to git/tarball
-    // when the raw path is unusable for a given repo.
-    match super::rawfetch::materialize(url, dest) {
+    // crawl for tens of minutes and then die.
+    //
+    // When a pin is requested the raw path is the ONLY path: it materializes
+    // every blob at `raw.githubusercontent.com/<owner>/<repo>/<sha>/<path>`
+    // (Fastly, reliable) so the resulting tree is exactly the pinned commit.
+    // Falling back to an unpinned git/tarball at branch tip would silently
+    // break the pin, so a pinned clone that cannot be materialized fails hard.
+    match super::rawfetch::materialize(url, dest, pin) {
         Ok(()) => {
             return CloneStatus {
                 ok: true,
@@ -196,6 +226,14 @@ pub fn clone(url: &str, dest: &Path) -> CloneStatus {
         Err(e) => {
             eprintln!("raw tree download failed: {}", short(&format!("{e:#}")));
             let _ = force_remove_all(dest);
+            if pin.is_some() {
+                return CloneStatus {
+                    ok: false,
+                    last_message: format!(
+                        "pinned tree materialization failed (no unpinned fallback): {e:#}"
+                    ),
+                };
+            }
         }
     }
 
@@ -257,6 +295,17 @@ pub fn clone(url: &str, dest: &Path) -> CloneStatus {
     let status = tarball_fallback(url, dest);
     cleanup_askpass(askpass.as_deref());
     status
+}
+
+/// The pin a repository was materialized at, if any. `materialize` records a
+/// `.ghost-source-pin` marker holding the exact SHA (or the default branch)
+/// its tree was fetched from. The deploy path compares this against the
+/// recipe's pinned SHA so a reuse or re-clone can never silently serve an
+/// unpinned tree.
+///
+/// No network is touched here: verification is purely local.
+pub fn pinned_sha(dir: &Path) -> Option<String> {
+    super::rawfetch::pinned_sha(dir)
 }
 
 fn tarball_fallback(url: &str, dest: &Path) -> CloneStatus {
@@ -577,5 +626,34 @@ mod tests {
         let out = run_with_timeout(cmd, Duration::from_secs(30));
         assert!(out.status.success());
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+    }
+
+    /// The pin marker is written by the materializer and read back by the
+    /// deploy path's anti-TOFU check; a missing or mismatched marker must be
+    /// reported as `None`/different so a legacy unpinned checkout is never
+    /// silently reused for a pinned recipe.
+    #[test]
+    fn pin_marker_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("dgp-pin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert_eq!(pinned_sha(&dir), None, "no marker yet");
+
+        std::fs::write(
+            dir.join(PIN_MARKER_FILE),
+            "5b3da65ea310f98480c5258af97ff4d5c6f9d5b0\n",
+        )
+        .unwrap();
+        assert_eq!(
+            pinned_sha(&dir).as_deref(),
+            Some("5b3da65ea310f98480c5258af97ff4d5c6f9d5b0"),
+            "marker must be read verbatim"
+        );
+
+        std::fs::write(dir.join(PIN_MARKER_FILE), "   \n").unwrap();
+        assert_eq!(pinned_sha(&dir), None, "blank marker means unpinned");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

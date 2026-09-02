@@ -29,7 +29,11 @@ fn safe_dirname(name: &str) -> String {
 }
 
 /// Clone (or reuse) the repository into the permanent services directory.
-pub fn clone_repo(analysis: &RepoAnalysis, work_dir: Option<&Path>) -> Option<PathBuf> {
+pub fn clone_repo(
+    analysis: &RepoAnalysis,
+    work_dir: Option<&Path>,
+    pin: Option<&str>,
+) -> Option<PathBuf> {
     let base = work_dir
         .map(|p| p.to_path_buf())
         .unwrap_or_else(crate::paths::services_dir);
@@ -38,12 +42,14 @@ pub fn clone_repo(analysis: &RepoAnalysis, work_dir: Option<&Path>) -> Option<Pa
     let dir = base.join(safe_dirname(&analysis.name));
     // Always delegate to gitclone::clone: it reuses an intact checkout,
     // reclones a corrupted one (interrupted clones ship a partial worktree
-    // that would fail the build far from the cause) and fetches fresh.
+    // that would fail the build far from the cause), fetches fresh, and —
+    // when `pin` is set — refuses any checkout not built from exactly that
+    // SHA (a legacy unpinned tree is recloned at the pinned SHA).
     let url = format!(
         "https://github.com/{}/{}.git",
         analysis.owner, analysis.name
     );
-    let status = gitclone::clone(&url, &dir);
+    let status = gitclone::clone(&url, &dir, pin);
     eprintln!("clone: {}", status.last_message);
     if !status.ok {
         return None;
@@ -233,12 +239,46 @@ pub fn deploy_service(
     };
 
     emit("cloning repository...");
-    let Some(project_dir) = clone_repo(analysis, work_dir) else {
+    let Some(project_dir) = clone_repo(analysis, work_dir, Some(recipe.commit)) else {
         result
             .errors
             .push("git clone failed after retries (check network connection)".into());
         return result;
     };
+
+    // ── pinned commit (anti-TOFU) ──
+    // The recipe names one specific commit; a deployment must build exactly
+    // that, never whichever `main`/`master` happens to point at download
+    // time. `clone_repo` was asked for `recipe.commit`, so the tree in
+    // `project_dir` was materialized blob-by-blob from that SHA — verify the
+    // recorded marker matches, then refuse to build anything else.
+    match super::gitclone::pinned_sha(&project_dir) {
+        Some(have) if have == recipe.commit => {}
+        Some(have) => {
+            report_err(
+                &mut result,
+                format!(
+                    "checkout is pinned to {have}, recipe pins {} (anti-TOFU); refusing to build an unpinned tree.",
+                    recipe.commit
+                ),
+            );
+            return result;
+        }
+        None => {
+            report_err(
+                &mut result,
+                format!(
+                    "checkout carries no pin marker, recipe pins {} (anti-TOFU); refusing to build an unpinned tree.",
+                    recipe.commit
+                ),
+            );
+            return result;
+        }
+    }
+    emit(&format!(
+        "build: pinned to commit {}",
+        &recipe.commit[..recipe.commit.len().min(12)]
+    ));
 
     // ── tool doctor: manifest requirements vs installed tools ──
     let findings = super::toolcheck::check_findings(&project_dir, recipe.display_name);
@@ -305,7 +345,10 @@ pub fn deploy_service(
     // convenience — it is the only source modules will have.
     if recipe.language == "Go" {
         match super::goenv::seed_go_modules(&project_dir) {
-            Ok(n) => emit(&format!("build: seeded Go module cache ({} module(s) ready)", n)),
+            Ok(n) => emit(&format!(
+                "build: seeded Go module cache ({} module(s) ready)",
+                n
+            )),
             Err(e) => {
                 // Go services have no prefetch step for modules (the seeder
                 // IS the prefetch, running on the host with network). A

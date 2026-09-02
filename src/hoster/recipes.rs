@@ -15,6 +15,10 @@ pub struct DemoRecipe {
     pub service_name: &'static str,
     pub description: &'static str,
     pub display_name: &'static str,
+    /// Pinned commit SHA that a deployment checks out after cloning, so a
+    /// recipe never silently tracks whatever `main`/`master` moved to at
+    /// build time (anti-TOFU). Bumped consciously when a recipe is updated.
+    pub commit: &'static str,
     pub pre_build: &'static [&'static str],
     pub build_steps: &'static [&'static str],
     /// Host-phase dependency pre-fetch steps, run BEFORE the sandboxed build
@@ -46,18 +50,36 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         service_name: "demo-vert",
         description: "VERT — next-generation file converter (Svelte)",
         display_name: "VERT",
+        commit: "cc7b5a54d5e9c797b377db47b9bdfbb561707783",
         pre_build: &["if [ -f .env.example ] && [ ! -f .env ]; then cp .env.example .env; fi"],
-        prefetch_steps: &["bun install --frozen-lockfile"],
+        // Two-stage prefetch. The first fills node_modules/caches; the second
+        // pre-seeds paraglide-js's remote *plugin* cache (`project.inlang/
+        // cache/plugins/<fnv1a(module-url)>` — gitignored, so absent in a
+        // fresh pinned tree). At build time paraglide-js resolves the plugins
+        // Network-First (see @inlang/sdk plugin/cache.js): it WARNS rather
+        // than failing compile when offline, but emits a broken i18n tree and
+        // SvelteKit's prerender then dies with `[500] /`. Seeding the exact
+        // files makes the offline build deterministic. Filenames are
+        // FNV1a-64(base36) of the module URLs in project.inlang/settings.json
+        // — re-derive them (`prefetch.rs::paraglide_cache_name`) when a pin
+        // bump changes those modules. Both modules are staged as `.tmp-*` and
+        // renamed ONLY after both downloads succeed (fail closed): a partial
+        // seed is never presented to the sandboxed build.
+        prefetch_steps: &[
+            "bun install --frozen-lockfile",
+            "curl -fsSL --create-dirs https://cdn.jsdelivr.net/npm/@inlang/plugin-message-format@4/dist/index.js -o project.inlang/cache/plugins/.tmp-mf && curl -fsSL https://cdn.jsdelivr.net/npm/@inlang/plugin-m-function-matcher@2/dist/index.js -o project.inlang/cache/plugins/.tmp-fm && mv project.inlang/cache/plugins/.tmp-mf project.inlang/cache/plugins/2sy648wh9sugi && mv project.inlang/cache/plugins/.tmp-fm project.inlang/cache/plugins/ygx0uiahq6uw",
+        ],
         // PrivateNetwork is enforced: deps come ONLY from the host prefetch
-        // (which just ran `bun install` above, filling node_modules + cache).
-        // The sandboxed build itself is fully offline.
+        // (which just ran `bun install` + the paraglide plugin seed above,
+        // filling node_modules/caches + the inlang plugin cache). The
+        // sandboxed build itself is fully offline.
         build_steps: &["bun run build"],
         // Served by THIS binary (built-in static server) instead of shelling
         // out to `python -m http.server`: one less host dependency.
         start_cmd: "{self} __serve-static {project}/build {port}",
         port: 0,
         searxng: false,
-        tools: &["bun"],
+        tools: &["bun", "curl"],
         loopback_only: true,
     },
     DemoRecipe {
@@ -67,6 +89,7 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         service_name: "demo-searxng",
         description: "SearXNG — privacy-friendly metasearch engine (Python)",
         display_name: "SearXNG",
+        commit: "18af21159bd7b84880cd7265b184825493322232",
         pre_build: &[],
         prefetch_steps: &[
             "python3 -m pip download -r requirements.txt -d .ghost-cache/pip-wheelhouse --only-binary=:all: && touch .ghost-cache/pip-wheelhouse/.done",
@@ -88,13 +111,12 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         service_name: "demo-memos",
         description: "Memos — self-hosted, open-source knowledge base (Go)",
         display_name: "Memos",
+        commit: "245e5e3a3e95cd3648fd66a696e0970e5eef1254",
         pre_build: &[],
         // pnpm fetch fills the virtual store from the lockfile WITHOUT
         // building node_modules or running any lifecycle script; the sandboxed
         // install links node_modules from that warm store, offline.
-        prefetch_steps: &[
-            "pnpm --dir web fetch --store-dir {project}/.ghost-cache/pnpm",
-        ],
+        prefetch_steps: &["pnpm --dir web fetch --store-dir {project}/.ghost-cache/pnpm"],
         build_steps: &[
             // PrivateNetwork is enforced: --offline is required since the
             // store was filled by the prefetch (never reach the registry).
@@ -115,6 +137,7 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         service_name: "demo-svelte",
         description: "Svelte starter template — official static site starter",
         display_name: "Svelte Template",
+        commit: "5b3da65ea310f98480c5258af97ff4d5c6f9d5b0",
         pre_build: &[],
         prefetch_steps: &["bun install --frozen-lockfile"],
         // PrivateNetwork is enforced: deps come only from the host prefetch.

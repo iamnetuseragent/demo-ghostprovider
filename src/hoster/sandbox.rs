@@ -46,10 +46,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(90 * 60);
 /// *before* the sandbox (see `prefetch`), so the build itself never needs
 /// egress. This is why `--verify-sandbox`'s "no outbound connect" guarantee is
 /// now structural instead of observational.
-const BUILD_NETWORK_PROPERTIES: &[&str] = &[
-    "PrivateNetwork=yes",
-    "IPAddressDeny=any",
-];
+const BUILD_NETWORK_PROPERTIES: &[&str] = &["PrivateNetwork=yes", "IPAddressDeny=any"];
 
 /// Env vars a build step must never inherit. The sandbox already constrains
 /// filesystem reach, but env vars are how a hostile build step would
@@ -66,15 +63,16 @@ const SCRUBBED_ENV_VARS: &[&str] = &[
 
 /// Variable-name patterns that identify credentials regardless of their exact
 /// name, so a future session secret cannot slip through a stale denylist.
-const SCRUBBED_ENV_PATTERNS: &[&str] = &["TOKEN", "PASSWORD", "SECRET", "OPENCHAMBER_", "OPENCODE_"];
+const SCRUBBED_ENV_PATTERNS: &[&str] =
+    &["TOKEN", "PASSWORD", "SECRET", "OPENCHAMBER_", "OPENCODE_"];
 
 /// Whether an env-var name looks like a credential (token/password/secret or
 /// an openchamber/opencode session secret such as the agent-tool token).
 fn is_credential_name(name: &str) -> bool {
     SCRUBBED_ENV_VARS.contains(&name)
-        || SCRUBBED_ENV_PATTERNS.iter().any(|p| {
-            name.contains(p) || name.to_ascii_uppercase().contains(p)
-        })
+        || SCRUBBED_ENV_PATTERNS
+            .iter()
+            .any(|p| name.contains(p) || name.to_ascii_uppercase().contains(p))
 }
 
 pub struct CmdResult {
@@ -188,7 +186,9 @@ pub fn sandbox_warning() -> Option<&'static str> {
     match effective_mode() {
         EffectiveSandbox::Full => {}
         EffectiveSandbox::DisabledByEnv => {
-            return Some("sandbox DISABLED by GHOSTPROVIDER_NO_SANDBOX — builds run with no isolation");
+            return Some(
+                "sandbox DISABLED by GHOSTPROVIDER_NO_SANDBOX — builds run with no isolation",
+            );
         }
         EffectiveSandbox::FallbackPlain => {
             return Some("systemd-run not found — builds run with no isolation");
@@ -201,9 +201,7 @@ pub fn sandbox_warning() -> Option<&'static str> {
     // invoking user. That is the documented demo model for a non-root panel;
     // acknowledged via GHOSTPROVIDER_ALLOW_INSECURE_USER or surfaced loudly.
     if !crate::flags::env_flag(ALLOW_INSECURE_USER_ENV) {
-        Some(
-            "no dedicated build user (GHOSTPROVIDER_BUILD_USER) — builds run as the invoking user",
-        )
+        Some("no dedicated build user (GHOSTPROVIDER_BUILD_USER) — builds run as the invoking user")
     } else {
         None
     }
@@ -219,6 +217,13 @@ fn scrub_env(run_env: &mut BTreeMap<String, String>) {
 /// prefetch phases scrub with the identical policy.
 pub fn sandbox_scrub_denylist() -> &'static [&'static str] {
     SCRUBBED_ENV_VARS
+}
+
+/// Cache/home redirects applied inside the build sandbox. Exposed so the
+/// host prefetch runner applies the identical redirects and writes the cache
+/// files the offline build later reads.
+pub(crate) fn cache_env_pub(project_dir: Option<&Path>) -> BTreeMap<&'static str, String> {
+    cache_env(project_dir)
 }
 
 fn cache_env(project_dir: Option<&Path>) -> BTreeMap<&'static str, String> {
@@ -239,6 +244,15 @@ fn cache_env(project_dir: Option<&Path>) -> BTreeMap<&'static str, String> {
         ("GOTMPDIR", m("go-tmp")),
         ("npm_config_store_dir", m("pnpm")),
         ("PNPM_HOME", m("pnpm-home")),
+        // pnpm v11 is network-paranoid by default: it verifies the managed
+        // engine's npm registry signature (engine identity) and re-checks each
+        // locked version's publish age against the registry (default
+        // minimum-release-age = 1440 min) on every resolution. Neither can work
+        // in the offline build sandbox. The sandbox already pins source identity
+        // to the git SHA, so we drop both network-only checks here rather than
+        // let an unreachable registry abort the frozen build.
+        ("pnpm_config_pm_on_fail", "ignore".to_string()),
+        ("pnpm_config_minimum_release_age", "0".to_string()),
         ("TMPDIR", m("tmp")),
         // HOME is re-pointed inside the sandbox so a hostile build step cannot
         // read the invoking user's real home (~/.ssh, ~/.netrc, ~/.config with
@@ -289,6 +303,11 @@ pub fn run_sandboxed(
     for (k, v) in extra_env {
         run_env.insert(k.clone(), v.clone());
     }
+    // Build steps are non-interactive by definition (no TTY in a systemd-run
+    // unit): force CI=1 exactly like the host prefetch runner does, so pnpm
+    // and friends never stall on a confirmation prompt (e.g. pnpm's modules
+    // purge when the projected self-version does a layout change).
+    run_env.insert("CI".to_string(), "1".into());
     // Keep the sandbox consistent with the tool doctor: when the doctor
     // allowed an old `go` because GOTOOLCHAIN=auto can fetch the required
     // toolchain (checksum-verified, cached under GOPATH), the build must be
@@ -556,6 +575,17 @@ mod tests {
         assert!(!matches!(home, Some(h) if h.starts_with("/home/")));
         let pnpm = env.get("npm_config_store_dir").map(|s| s.as_str());
         assert!(matches!(pnpm, Some(p) if p.starts_with("/proj/.ghost-cache/")));
+        // Network-paranoid pnpm v11 checks are disabled so the offline build
+        // does not abort trying to reach the registry.
+        assert_eq!(
+            env.get("pnpm_config_pm_on_fail").map(String::as_str),
+            Some("ignore")
+        );
+        assert_eq!(
+            env.get("pnpm_config_minimum_release_age")
+                .map(String::as_str),
+            Some("0")
+        );
     }
 
     #[test]

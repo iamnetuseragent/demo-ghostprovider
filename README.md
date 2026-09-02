@@ -58,10 +58,35 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
   - **Build-time `$HOME` is redirected** — inside the build sandbox `$HOME` points at `<project>/.ghost-cache/home` instead of the invoking user's real home, so build-time code cannot read `~/.ssh`, `~/.netrc` or `~/.config` credentials even though `ProtectHome=read-only` allows reads. `--verify-sandbox` asserts this (it compares the unit's `$HOME` with the invoker's).
   - **Honest degradation** — `GHOSTPROVIDER_NO_SANDBOX=1` or a missing `systemd-run` prints a `warn:` line on every deploy instead of silently weakening isolation; the same applies to `GHOSTPROVIDER_NO_NETLOG`. A non-root panel can never drop to a dedicated build user, so the `setpriv` path activates only when `GHOSTPROVIDER_BUILD_USER` names an existing user *and* the process is root; otherwise builds run as the invoking user and the status line says so unless `GHOSTPROVIDER_ALLOW_INSECURE_USER=1` acknowledges it
   - **Loopback where possible, never a silent LAN exposure** — VERT is served by our own loopback-only server and its unit gets `IPAddressAllow=127.0.0.1 ::1` (runtime egress locked to loopback). Apps that must reach the internet (SearXNG, Memos) cannot be network-locked; after start every deployment's listener address is re-checked, and a service found binding a non-loopback address prints an explicit `warn:` instead of quietly exposing the port to your LAN
-  - **Threat model, stated plainly** — cloned third-party code builds and runs with your user's *read* access to `$HOME` (`ProtectHome=read-only` and `ProtectSystem=full` stop writes, not reads). The build phase's direct read is mitigated: `$HOME` is redirected into a scratch dir (see above) and a dedicated build user (`GHOSTPROVIDER_BUILD_USER`, via `setpriv`) or explicit opt-in takes builds out of your identity entirely. Deployed *services* still run under your user and can read `$HOME` — treat every deployed upstream as untrusted: never rely on files under `$HOME` being invisible to a service you host, and pin sensitive work to a dedicated user. Deployments fetch each recipe's default branch without commit pinning (TOFU), so whatever `main` moves to is what you get; review service diffs before redeploying.
+  - **Threat model, stated plainly** — cloned third-party code builds and runs with your user's *read* access to `$HOME` (`ProtectHome=read-only` and `ProtectSystem=full` stop writes, not reads). The build phase's direct read is mitigated: `$HOME` is redirected into a scratch dir (see above) and a dedicated build user (`GHOSTPROVIDER_BUILD_USER`, via `setpriv`) or explicit opt-in takes builds out of your identity entirely. Deployed *services* still run under your user and can read `$HOME` — treat every deployed upstream as untrusted: never rely on files under `$HOME` being invisible to a service you host, and pin sensitive work to a dedicated user. Deployments pin each recipe to a fixed commit SHA that is enforced against the source provenance marker (see "Commit pinning" below), so redeploys are reproducible and a moved `main` cannot silently change what you build.
   - **Deadline, not hang** — every build command runs under a timeout (900s), enforced in both the sandboxed (`RuntimeMaxSec`) and plain paths, so an untrusted build cannot wedge your user session
   - **Audit the sandbox itself** — `demo-ghostprovider --verify-sandbox` (needs `strace` on the host) runs a trivial command inside the *same* hardened unit used for deploys and inspects the syscall trace: any outbound `connect()` to a non-loopback address, any `execve()` resolving into the project tree, or a sandbox `$HOME` equal to the invoker's real `$HOME` is reported as a failure. It is a runtime escape-detector for the sandbox configuration, distinct from the E2E systemd check (`--selftest`).
 - **Release supply chain** — the minisign secret key never lives on GitHub: releases are signed locally (`scripts/release-local.sh --sign`), the signature files are committed, and CI refuses to publish anything unsigned; `install.sh` requires the signature too (`--allow-unsigned` is the explicit opt-out)
+
+### Commit pinning
+
+Each recipe declares a pinned commit SHA for the service it builds. On (re)deploy
+the source tree is materialized at that exact commit from the `raw.githubusercontent.com`
+artifact (pin-pinned, never the live `main`), and a provenance marker
+(`.ghost-source-pin`) is written next to the tree:
+
+- an already-pinned checkout at the requested SHA is reused as-is (`already cloned (pinned)`),
+  so redeploys do not re-download;
+- an existing checkout that is either unpinned or at a different SHA is **recloned** to the
+  pinned SHA rather than silently reused — a moved or tampered tree can never be mistaken for
+  the pinned one;
+- an incomplete/interrupted clone is detected and recloned, never trusted;
+- there is **no fallback**: if the pinned SHA cannot be fetched (unreachable or the bytes do
+  not match), the deploy refuses rather than falling back to an unpinned `main`.
+
+Fetching is raw-materialization over HTTPS (not the git protocol), so it only needs the
+allowlisted raw host and its Fastly CDN hop.
+
+Because source identity is already guaranteed by the pin, the build sandbox disables pnpm's
+two network-paranoid runtime checks (which otherwise need the npm registry and cannot prove
+anything offline): the managed-engine signature verification (`pmOnFail=ignore`) and the
+default publish-age lockfile re-check (`minimumReleaseAge=0`). Together they let the fully
+pre-seeded pnpm build run offline like every other service.
 
 ## System Scan
 
