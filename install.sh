@@ -1,8 +1,16 @@
 #!/bin/sh
 # demo-ghostprovider one-shot installer (static binary).
 #
-#   curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh
-#   curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh -s -- --uninstall
+# Recommended (the installer itself is minisign-verified before it runs, so
+# raw `curl | sh` of an unverified script is avoided):
+#
+#   curl -fsSL -o /tmp/dgp-install.sh https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh
+#   curl -fsSL -o /tmp/dgp-install.sh.minisig https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh.minisig
+#   minisign -Vm /tmp/dgp-install.sh -s /tmp/dgp-install.sh.minisig -P "RWSUAckJJhM011XphIH3LQE0Ebn62qqMMQej4Ong52/rGNw/rxRKniqA" && sh /tmp/dgp-install.sh
+#   sh /tmp/dgp-install.sh --uninstall
+#
+# The public key/fingerprint are published in docs/DISTRIBUTION.md; cross-check
+# the pasted key above against that document rather than trusting this comment.
 #
 # Downloads the latest tagged musl binary, verifies sha256 AND the minisign
 # signature (refusing unsigned releases), installs into ~/.local/bin.

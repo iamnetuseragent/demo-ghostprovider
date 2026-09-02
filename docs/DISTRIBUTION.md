@@ -92,6 +92,21 @@ minisign -Vm SHA256SUMS -p docs/release.pub
 sha256sum -c SHA256SUMS
 ```
 
+The one-shot demo installer (`install.sh`) is signed with the same key too
+(`install.sh.minisig`, committed next to it), so the installer itself can be
+verified **before** it is executed instead of being piped to `sh` unchecked:
+
+```sh
+curl -fsSL -o /tmp/dgp-install.sh https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh
+curl -fsSL -o /tmp/dgp-install.sh.minisig https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh.minisig
+minisign -Vm /tmp/dgp-install.sh -s /tmp/dgp-install.sh.minisig -P "$(sed -n 2p docs/release.pub)"
+sh /tmp/dgp-install.sh
+```
+
+If the signature does not verify, do **not** run it — the script has been
+tampered with or the key has rotated. The `installation/install.sh` (source /
+full product path) is also signed the same way (`installation/install.sh.minisig`).
+
 ## Git tag signing (GPG)
 
 Source releases are delivered as **tags**, and the source installer
