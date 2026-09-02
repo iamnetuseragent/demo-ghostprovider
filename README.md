@@ -124,7 +124,7 @@ curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/m
 Options:
 
 ```bash
-... | sh -s -- --tag v0.0.15        # pin a version
+... | sh -s -- --tag v0.0.16        # pin a version
 ... | sh -s -- --mirror codeberg    # prefer the Codeberg mirror
 ... | sh -s -- --uninstall          # remove the binary
 ```
