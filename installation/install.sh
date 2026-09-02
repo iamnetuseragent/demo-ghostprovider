@@ -135,7 +135,7 @@ if [ "$MODE" != "head" ]; then
     info "=> Verifying tag signature (git verify-tag ...)"
     # Expected signing identity. The GPG fingerprint is published in
     # docs/DISTRIBUTION.md (provisioned before the first signed tag); the
-    # minisign key-id that signs the binary checksums is 3673A05B26E03D3E.
+    # minisign key-id that signs the binary checksums is D734132609C90194.
     if git -C "$SRC_DIR" verify-tag "$TAG"; then
       ok "   tag $TAG: good signature."
       info "   signature must be from the maintainer key listed in docs/DISTRIBUTION.md"

@@ -82,7 +82,7 @@ One minisign keypair covers demo and full-version artifacts.
 
 ```
 public key : docs/release.pub (committed in both repositories)
-fingerprint: 3673A05B26E03D3E
+fingerprint: D734132609C90194
 ```
 
 Verify any release artifact:
@@ -111,8 +111,8 @@ unverifiable identity.
   git verify-tag vX.Y.Z            # after cloning
   ```
 
-* The minisign key `RWQ+PeAmW6BzNqV8Io2xcC1hUxoJxffAGBg/o2YXsU9DZ6I3I4ivWDv3`
-  (fingerprint `3673A05B26E03D3E`) signs the *binary* checksums; the GPG key
+* The minisign key `RWSUAckJJhM011XphIH3LQE0Ebn62qqMMQej4Ong52/rGNw/rxRKniqA`
+  (fingerprint `D734132609C90194`) signs the *binary* checksums; the GPG key
   signs the *source* tag. They are separate identities on purpose: the binary
   key can be rotated without invalidating installed source builds.
 * **Status: pending** — the GPG fingerprint will be pasted into this section
