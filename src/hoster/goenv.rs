@@ -222,13 +222,21 @@ pub fn seed_go_modules(project_dir: &Path) -> anyhow::Result<usize> {
             // One transient failure must not kill the whole pool: everything
             // else keeps seeding (resumable), and the straggler is reported
             // once — `go` re-fetches it directly and the next run resumes it.
+            // Retry with a short backoff so a brief DNS/network blip (e.g.
+            // "failed to lookup address information: Try again") does not
+            // fail-closed a deploy that would otherwise succeed.
             let mut last_err = None;
-            for _ in 0..2 {
+            for attempt in 0..4 {
                 if let Err(e) = seed_one_module(&cache, &module, &ver, &h1) {
                     last_err = Some(e);
                 } else {
                     last_err = None;
                     break;
+                }
+                if attempt < 3 {
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        500u64 * (attempt as u64 + 1),
+                    ));
                 }
             }
             if let Some(e) = last_err {
