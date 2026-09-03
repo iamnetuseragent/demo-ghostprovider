@@ -44,6 +44,29 @@ const RAMP: [Color; 3] = [ACCENT, MAGENTA, WARN_YELLOW];
 
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+// Hard bound on the deploy log held in memory. A heavy build (a SvelteKit +
+// wasm app, a large Python project) can emit tens of thousands of lines; the
+// deploy screen re-wraps the entire buffer every ~80ms tick, so unbounded
+// growth turns each frame into O(n) work and the TUI freezes. We keep only
+// the newest tail — the screen shows the latest output, which is what a user
+// watching a build wants — and drop the prefix once the cap is exceeded.
+//
+// The cap is chosen generously (a tall terminal re-renders ~thousands of
+// wrapped lines at worst), high enough to never lose the meaningful build log
+// but low enough to keep frames cheap on the widest builds.
+const MAX_DEPLOY_LINES: usize = 2000;
+
+/// Push one log line onto the bounded deploy buffer, trimming the oldest
+/// lines once the cap is exceeded so the screen stays responsive on very
+/// long builds.
+fn push_deploy_line(lines: &mut Vec<String>, line: String) {
+    lines.push(line);
+    if lines.len() > MAX_DEPLOY_LINES {
+        let overflow = lines.len() - MAX_DEPLOY_LINES;
+        lines.drain(0..overflow);
+    }
+}
+
 pub(crate) enum Screen {
     Main {
         selected: usize,
@@ -146,13 +169,13 @@ fn event_loop(
                 Msg::Log(line) => {
                     if let Screen::Deploy { lines, .. } = &mut app.screen {
                         for l in line.split('\n') {
-                            lines.push(l.to_string());
+                            push_deploy_line(lines, l.to_string());
                         }
                     }
                 }
                 Msg::DeployDone(ok) => {
                     if let Screen::Deploy { lines, done } = &mut app.screen {
-                        lines.push(if ok {
+                        push_deploy_line(lines, if ok {
                             "deployment complete — service is up".into()
                         } else {
                             "deployment failed".into()
@@ -1443,5 +1466,21 @@ mod tests {
             "! X needs Go >= 1.27.0 — update first: cmd"
         ));
         assert!(!doctor_body_markers("! invalid GitHub URL format"));
+    }
+
+    /// The deploy log is bounded: pushing far beyond the cap never lets the
+    /// in-memory buffer (and thus per-frame re-render cost) grow without limit,
+    /// and the newest tail is preserved so users still see the live build.
+    #[test]
+    fn deploy_log_is_bounded_and_keeps_the_tail() {
+        let mut lines: Vec<String> = Vec::new();
+        for i in 0..(MAX_DEPLOY_LINES * 2) {
+            push_deploy_line(&mut lines, format!("line {i}"));
+        }
+        assert_eq!(lines.len(), MAX_DEPLOY_LINES);
+        // Oldest lines are dropped; the newest remain visible.
+        assert!(!lines.iter().any(|l| l == "line 0"));
+        let expected_last = format!("line {}", MAX_DEPLOY_LINES * 2 - 1);
+        assert_eq!(lines.last().map(String::as_str), Some(expected_last.as_str()));
     }
 }
