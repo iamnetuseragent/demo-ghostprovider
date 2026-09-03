@@ -105,40 +105,55 @@ pub fn run_host_step(cmd: &str, project_dir: &Path, log: &dyn Fn(&str)) -> anyho
         .spawn()?;
 
     // The prefetch downloader (pip/bun/pnpm) prints a lot of progress, e.g.
-    // `pip download` emits a "Downloading …" line per dependency — SearXNG has
-    // hundreds. It must NEVER inherit the panel's stdout/stderr: that would
-    // spill raw bytes straight into the terminal on top of the TUI's alternate
-    // screen, corrupting the UI mid-deploy. Instead we pipe both streams and
-    // forward each line through the deploy log (the TUI keeps that bounded).
-    // Worker threads only send owned lines down an mpsc channel; the `log`
-    // closure stays on this (main) thread, so no 'static borrow is required.
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    // `pip download` emits a "Downloading …" line per dependency and `bun
+    // install` a "+ pkg@ver" line per package. Two constraints:
+    //
+    //  1. It must NEVER inherit the panel's stdout/stderr: that would spill
+    //     raw bytes straight into the terminal on top of the TUI's alternate
+    //     screen, corrupting the UI mid-deploy.
+    //  2. It should also NOT be forwarded into the deploy log: a normal deploy
+    //     would bury the build status under hundreds of download lines. The
+    //     panel is meant to show the *build*, not the dependency fetch.
+    //
+    // So we drain both streams (so the pipes never fill and block the child),
+    // discarding the output on success but keeping a bounded tail that is
+    // surfaced only if the prefetch fails — that is when the lines matter.
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    let out_tx = tx.clone();
-    let out_thread = std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().flatten() {
-            let _ = out_tx.send(format!("  {line}"));
-        }
-    });
-    let err_thread = std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().flatten() {
-            let _ = tx.send(format!("  {line}"));
-        }
-    });
+    let out_thread = std::thread::spawn(move || drain_tail(stdout));
+    let err_thread = std::thread::spawn(move || drain_tail(stderr));
 
-    // Forward lines as they arrive; join the readers only after the process
-    // exits so a slow/quiet prefetch doesn't delay the outcome.
     let status = child.wait()?;
-    for line in rx {
-        log(&line);
+    let out_tail = out_thread.join().unwrap_or_default();
+    let err_tail = err_thread.join().unwrap_or_default();
+    if status.success() {
+        Ok(())
+    } else {
+        let mut detail = String::new();
+        for line in err_tail.iter().chain(out_tail.iter()) {
+            detail.push_str(&format!("    {line}\n"));
+        }
+        anyhow::bail!("prefetch step failed (exit {status}): {cmd}\n{detail}");
     }
-    let _ = out_thread.join();
-    let _ = err_thread.join();
-    match status {
-        s if s.success() => Ok(()),
-        s => anyhow::bail!("prefetch step failed (exit {s}): {cmd}"),
+}
+
+/// Rows of prefetch output kept for a failure tail. Enough to show the real
+/// error from a package-manager failure, bounded so a pathological downloader
+/// can't balloon the in-memory buffer.
+const PREFETCH_TAIL: usize = 40;
+
+/// Drain one piped stream (stdout or stderr), discarding it but keeping the
+/// last `PREFETCH_TAIL` lines. Returns those lines so a *failed* prefetch can
+/// surface its error tail; a successful run shows nothing.
+fn drain_tail<R: std::io::Read>(stream: R) -> Vec<String> {
+    let mut tail: Vec<String> = Vec::new();
+    for line in BufReader::new(stream).lines().flatten() {
+        if tail.len() == PREFETCH_TAIL {
+            tail.remove(0);
+        }
+        tail.push(line);
     }
+    tail
 }
 
 /// Marker written only after a full, successful `pip download`. Its presence
