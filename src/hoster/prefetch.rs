@@ -17,8 +17,9 @@
 //! sandbox before), not via this binary's allowlisted client.
 
 use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Wheelhouse directory for a recipe's pip dependencies, under the project's
 /// persistent cache (kept in sync with the pip cache env in `sandbox.rs`).
@@ -94,15 +95,47 @@ pub fn run_host_step(cmd: &str, project_dir: &Path, log: &dyn Fn(&str)) -> anyho
     let env = host_env(project_dir);
 
     log(&format!("prefetch (host): {cmd}"));
-    let status = Command::new("/bin/sh")
+    let mut child = Command::new("/bin/sh")
         .args(["-c", cmd])
         .current_dir(project_dir)
         .env_clear()
         .envs(&env)
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status();
-    match status? {
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    // The prefetch downloader (pip/bun/pnpm) prints a lot of progress, e.g.
+    // `pip download` emits a "Downloading …" line per dependency — SearXNG has
+    // hundreds. It must NEVER inherit the panel's stdout/stderr: that would
+    // spill raw bytes straight into the terminal on top of the TUI's alternate
+    // screen, corrupting the UI mid-deploy. Instead we pipe both streams and
+    // forward each line through the deploy log (the TUI keeps that bounded).
+    // Worker threads only send owned lines down an mpsc channel; the `log`
+    // closure stays on this (main) thread, so no 'static borrow is required.
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let out_tx = tx.clone();
+    let out_thread = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().flatten() {
+            let _ = out_tx.send(format!("  {line}"));
+        }
+    });
+    let err_thread = std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().flatten() {
+            let _ = tx.send(format!("  {line}"));
+        }
+    });
+
+    // Forward lines as they arrive; join the readers only after the process
+    // exits so a slow/quiet prefetch doesn't delay the outcome.
+    let status = child.wait()?;
+    for line in rx {
+        log(&line);
+    }
+    let _ = out_thread.join();
+    let _ = err_thread.join();
+    match status {
         s if s.success() => Ok(()),
         s => anyhow::bail!("prefetch step failed (exit {s}): {cmd}"),
     }
