@@ -121,9 +121,77 @@ pub(super) fn start_deployment(tx: Sender<Msg>, url: String) {
         let log = move |line: String| {
             let _ = log_tx.send(Msg::Log(line));
         };
+        // The deploy pipeline (clone/git/rawfetch) reports diagnostics via
+        // eprintln!() to the process stderr. During the TUI that stderr is the
+        // terminal, so those lines would leak raw bytes over the alternate
+        // screen and corrupt the interface for a moment. Redirect fd 2 into a
+        // pipe for the duration of the deploy and forward the captured lines
+        // into the deploy log instead.
+        let capture = StderrCapture::new(tx.clone());
         let ok = deploy::run_deployment(&url, &log) == deploy::DeployOutcome::Deployed;
+        capture.restore();
         let _ = tx.send(Msg::DeployDone(ok));
     });
+}
+
+/// Temporarily reroutes the process's stderr (fd 2) into a pipe, forwarding
+/// each captured line to the TUI as it arrives. Used while a TUI deploy is
+/// running so diagnostic eprintln!() output from the clone/git/rawfetch path
+/// never paints over the alternate screen.
+struct StderrCapture {
+    /// Duplicate of the original fd 2 so we can restore it afterwards.
+    saved: std::os::unix::io::RawFd,
+    /// Owned write end of the pipe; made to be fd 2 for the deploy duration.
+    pipe_write: std::os::unix::io::RawFd,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+
+impl StderrCapture {
+    fn new(tx: Sender<Msg>) -> Self {
+        let mut fds = [0; 2];
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return StderrCapture {
+                saved: -1,
+                pipe_write: -1,
+                reader: None,
+            };
+        }
+        let (read, write) = (fds[0], fds[1]);
+        let saved = unsafe { libc::dup(2) };
+        // fd 2 -> pipe write end (we keep our own copy of `write` open so the
+        // pipe survives until restore() even if dup2 then close renumbers 2).
+        unsafe { libc::dup2(write, 2) };
+        use std::io::BufRead;
+        use std::os::fd::FromRawFd;
+        let reader = std::thread::spawn(move || {
+            let file = unsafe { std::fs::File::from_raw_fd(read) };
+            let mut lines = std::io::BufReader::new(file).lines();
+            while let Some(Ok(line)) = lines.next() {
+                let _ = tx.send(Msg::Log(line));
+            }
+        });
+        StderrCapture {
+            saved,
+            pipe_write: write,
+            reader: Some(reader),
+        }
+    }
+
+    fn restore(mut self) {
+        if self.saved >= 0 {
+            unsafe { libc::dup2(self.saved, 2) };
+            unsafe { libc::close(self.saved) };
+            self.saved = -1;
+        }
+        if self.pipe_write >= 0 {
+            unsafe { libc::close(self.pipe_write) };
+            self.pipe_write = -1;
+        }
+        // Close the read side: the reader thread sees EOF and drains out.
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
 }
 
 /// (unit name, status, url) rows for the services screen.
