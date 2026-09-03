@@ -1,6 +1,6 @@
 <h1 align="center">Automated self-hosting platform</h1>
 
-> <p align="center">demo-ghostprovider is a restricted demo build of GhostProvider that automates deployment and management of a curated set of demo services (VERT, SearXNG, Memos, the official Svelte starter template) as systemd user units.</p>
+> <p align="center">GhostProvider is an open-source platform that simplifies self-hosting by automating deployment, service management, discovery, and clean removal.</p>
 
 ![GHOST PROVIDER Panel](assets/GHOSTPROVIDER%20PANEL.JPEG)
 
@@ -33,60 +33,24 @@ GhostProvider uses systemd user-level services because they provide:
 
 This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux distributions.
 
-### Distribution trust model
-
-- The demo ships only from this repository (GitHub + Codeberg mirror); release
-  artifacts are minisign-signed with the identity documented in
-  [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) (`docs/release.pub`).
-- The full version never uses download-token URLs. It is distributed via
-  Codeberg collaborator invites to a private repository, cloned with the
-  buyer's own credentials, and installed only after signature verification —
-  same discipline, same key.
-
 ## Security Model
 
-- **All data stays local** — no telemetry. Outbound requests are locked to a compiled-in allowlist (`api.github.com`, `github.com`, `raw.githubusercontent.com`, `codeload.github.com`, `proxy.golang.org`, `storage.googleapis.com`) and to **HTTPS only**. Redirects do not bypass it: they are followed one hop at a time, and every redirect target is re-checked against the allowlist *before* a connection to it opens. Each request (each redirect hop separately) is logged to `~/.local/state/demo-ghostprovider/net.log`, and `demo-ghostprovider --show-endpoints` prints the allowlist plus this session's counters so you can verify instead of trust. `codeload.github.com` is the download host GitHub points archive requests at; `proxy.golang.org` and `storage.googleapis.com` (its signed-URL redirect) are seeded only by the Go toolchain auto-provisioner — both reachable only as explicitly re-checked hops, and their bytes are re-verified by `go` against its checksum database before running.
+- **All data stays local** — no telemetry. Outbound requests are locked to a compiled-in HTTPS allowlist (`api.github.com`, `github.com`, `raw.githubusercontent.com`, `codeload.github.com`, `proxy.golang.org`, `storage.googleapis.com`), and every redirect hop is re-checked against it before a connection opens. Every request is logged to net.log; `demo-ghostprovider --show-endpoints` prints the allowlist and session counters so you can verify instead of trust.
 - **No root required** — services run as systemd user-level units
-- **Explicit confirmation before deploy** — the software always asks YES/NO before hosting a service
+- **Explicit confirmation before deploy** — always asks YES/NO first
 - **Service sandboxing:**
-  - `NoNewPrivileges=yes` — prevents privilege escalation
-  - `ProtectHome=read-only` — no write access to home directory
-  - `ProtectSystem=full` — /usr, /boot, and /etc are read-only
-  - `ReadWritePaths` — restricted to the deployed project directory; caches stay inside it (`XDG_CACHE_HOME`, npm/pnpm/yarn/bun/cargo/go cache dirs are redirected to `~project/.ghost-cache`, persist between deployments so repeated builds reuse downloaded artifacts, and are removed together with the clone when the service is deleted). Dependency pre-seeding moves downloads *before* the sandboxed build so the build itself can run fully offline (see `PrivateNetwork` below): Go module zips in `go.sum` are pre-seeded into `$GOMODCACHE/cache/download` as parallel, resumable byte-range fetches, Python recipes pre-download a wheelhouse (`pip download --only-binary=:all:` → `.ghost-cache/pip-wheelhouse`) that the sandboxed `pip install` consumes with `PIP_NO_INDEX` + `PIP_FIND_LINKS`, JS/TS recipes run `bun install`/`pnpm fetch` in the host phase (filling `.ghost-cache/bun` / the pnpm virtual store) so their sandboxed builds run offline. The downloader phase renders no fetched *code*: pip `--only-binary=:all:` wheels are inert archives (no `setup.py` runs), and bun/pnpm skip untrusted lifecycle scripts — anything executable runs only inside the offline sandbox. Pre-seeded bytes are never trusted implicitly: `go` re-verifies its modules against its checksum database, and pip wheels are verified by pip's own install-time checks
-  - Kernel surface locked: `ProtectKernelTunables/Modules/ControlGroups=yes`, `RestrictNamespaces`, `LockPersonality`, `RestrictRealtime`, `RestrictSUIDSGID`, empty `CapabilityBoundingSet`
-  - **Credential scrub** — build steps never inherit `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `DOCKER_AUTH_CONFIG` or `BUN_AUTH_TOKEN` (a hostile build step could otherwise exfiltrate a deployment credential); deployed services get the same via `UnsetEnvironment` plus `ProtectProc=invisible`
-  - **Build-time `$HOME` is redirected** — inside the build sandbox `$HOME` points at `<project>/.ghost-cache/home` instead of the invoking user's real home, so build-time code cannot read `~/.ssh`, `~/.netrc` or `~/.config` credentials even though `ProtectHome=read-only` allows reads. `--verify-sandbox` asserts this (it compares the unit's `$HOME` with the invoker's).
-  - **Honest degradation** — `GHOSTPROVIDER_NO_SANDBOX=1` or a missing `systemd-run` prints a `warn:` line on every deploy instead of silently weakening isolation; the same applies to `GHOSTPROVIDER_NO_NETLOG`. A non-root panel can never drop to a dedicated build user, so the `setpriv` path activates only when `GHOSTPROVIDER_BUILD_USER` names an existing user *and* the process is root; otherwise builds run as the invoking user and the status line says so unless `GHOSTPROVIDER_ALLOW_INSECURE_USER=1` acknowledges it
-  - **Loopback where possible, never a silent LAN exposure** — VERT is served by our own loopback-only server and its unit gets `IPAddressAllow=127.0.0.1 ::1` (runtime egress locked to loopback). Apps that must reach the internet (SearXNG, Memos) cannot be network-locked; after start every deployment's listener address is re-checked, and a service found binding a non-loopback address prints an explicit `warn:` instead of quietly exposing the port to your LAN
-  - **Threat model, stated plainly** — cloned third-party code builds and runs with your user's *read* access to `$HOME` (`ProtectHome=read-only` and `ProtectSystem=full` stop writes, not reads). The build phase's direct read is mitigated: `$HOME` is redirected into a scratch dir (see above) and a dedicated build user (`GHOSTPROVIDER_BUILD_USER`, via `setpriv`) or explicit opt-in takes builds out of your identity entirely. Deployed *services* still run under your user and can read `$HOME` — treat every deployed upstream as untrusted: never rely on files under `$HOME` being invisible to a service you host, and pin sensitive work to a dedicated user. Deployments pin each recipe to a fixed commit SHA that is enforced against the source provenance marker (see "Commit pinning" below), so redeploys are reproducible and a moved `main` cannot silently change what you build.
-  - **Deadline, not hang** — every build command runs under a timeout (900s), enforced in both the sandboxed (`RuntimeMaxSec`) and plain paths, so an untrusted build cannot wedge your user session
-  - **Audit the sandbox itself** — `demo-ghostprovider --verify-sandbox` (needs `strace` on the host) runs a trivial command inside the *same* hardened unit used for deploys and inspects the syscall trace: any outbound `connect()` to a non-loopback address, any `execve()` resolving into the project tree, or a sandbox `$HOME` equal to the invoker's real `$HOME` is reported as a failure. It is a runtime escape-detector for the sandbox configuration, distinct from the E2E systemd check (`--selftest`).
-- **Release supply chain** — the minisign secret key never lives on GitHub: releases are signed locally (`scripts/release-local.sh --sign`), the signature files are committed, and CI refuses to publish anything unsigned; `install.sh` requires the signature too (`--allow-unsigned` is the explicit opt-out)
-
-### Commit pinning
-
-Each recipe declares a pinned commit SHA for the service it builds. On (re)deploy
-the source tree is materialized at that exact commit from the `raw.githubusercontent.com`
-artifact (pin-pinned, never the live `main`), and a provenance marker
-(`.ghost-source-pin`) is written next to the tree:
-
-- an already-pinned checkout at the requested SHA is reused as-is (`already cloned (pinned)`),
-  so redeploys do not re-download;
-- an existing checkout that is either unpinned or at a different SHA is **recloned** to the
-  pinned SHA rather than silently reused — a moved or tampered tree can never be mistaken for
-  the pinned one;
-- an incomplete/interrupted clone is detected and recloned, never trusted;
-- there is **no fallback**: if the pinned SHA cannot be fetched (unreachable or the bytes do
-  not match), the deploy refuses rather than falling back to an unpinned `main`.
-
-Fetching is raw-materialization over HTTPS (not the git protocol), so it only needs the
-allowlisted raw host and its Fastly CDN hop.
-
-Because source identity is already guaranteed by the pin, the build sandbox disables pnpm's
-two network-paranoid runtime checks (which otherwise need the npm registry and cannot prove
-anything offline): the managed-engine signature verification (`pmOnFail=ignore`) and the
-default publish-age lockfile re-check (`minimumReleaseAge=0`). Together they let the fully
-pre-seeded pnpm build run offline like every other service.
+  - `NoNewPrivileges=yes`; `ProtectHome=read-only`; `ProtectSystem=full` (/usr, /boot, /etc read-only)
+  - `ReadWritePaths` restricted to the project directory — caches stay inside `.ghost-cache` and are deleted with the service
+  - **Offline build** — dependencies are pre-fetched before the sandboxed build (Go module zips, pip wheelhouse, bun/pnpm stores), which then runs under `PrivateNetwork=yes`; downloaded code never executes during fetching (pip `--only-binary`, bun/pnpm skip lifecycle scripts)
+  - Kernel locked: `ProtectKernelTunables/Modules/ControlGroups`, `RestrictNamespaces`, `LockPersonality`, `RestrictRealtime/SUIDSGID`, empty `CapabilityBoundingSet`
+  - **Credential scrub** — builds and services never inherit `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `BUN_AUTH_TOKEN`, `DOCKER_AUTH_CONFIG`
+  - **`$HOME` redirected** in the build sandbox to `.ghost-cache/home`, so build code cannot read `~/.ssh`, `~/.netrc` or `~/.config`
+  - **No silent weakening** — a missing sandbox/`netlog` prints an explicit `warn:`; a non-root panel can't silently drop to a dedicated build user
+  - **Loopback where possible** — VERT is loopback-only; a service binding a non-loopback port prints an explicit `warn:` instead of quietly exposing your LAN
+  - **Deadline** — every build command runs under a 900s timeout, so an untrusted build can't wedge your session
+  - **Auditable** — `--verify-sandbox` detects sandbox escapes under strace; `--selftest` is the E2E systemd check
+- **Fixed-commit builds** — each service is pinned to an exact commit SHA, so redeploys are reproducible and a moved `main` can't silently change what you build
+- **Release supply chain** — the minisign secret key never lives on GitHub; releases are signed locally, signatures are committed, and CI refuses to publish anything unsigned
 
 ## System Scan
 
@@ -119,14 +83,6 @@ One line — static binary, verified, ready to run:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh
-```
-
-Options:
-
-```bash
-... | sh -s -- --tag v0.0.16        # pin a version
-... | sh -s -- --mirror codeberg    # prefer the Codeberg mirror
-... | sh -s -- --uninstall          # remove the binary
 ```
 
 ## Install (Arch Linux)
