@@ -94,7 +94,7 @@ pub fn run_host_step(cmd: &str, project_dir: &Path, log: &dyn Fn(&str)) -> anyho
     crate::hoster::validate::validate_build_cmd(cmd).map_err(|r| anyhow::anyhow!("{r}: {cmd}"))?;
     let env = host_env(project_dir);
 
-    log(&format!("prefetch (host): {cmd}"));
+    let _ = log;
     let mut child = Command::new("/bin/sh")
         .args(["-c", cmd])
         .current_dir(project_dir)

@@ -275,10 +275,7 @@ pub fn deploy_service(
             return result;
         }
     }
-    emit(&format!(
-        "build: pinned to commit {}",
-        &recipe.commit[..recipe.commit.len().min(12)]
-    ));
+    emit("build...");
 
     // ── tool doctor: manifest requirements vs installed tools ──
     let findings = super::toolcheck::check_findings(&project_dir, recipe.display_name);
@@ -307,7 +304,6 @@ pub fn deploy_service(
     // produce a working tree — fail closed rather than build a broken service.
     for step in recipe.prefetch_steps {
         let resolved = resolve_project_step(step, &project_dir);
-        emit(&format!("build: prefetch {}", short_cmd(&resolved)));
         if let Err(e) = super::prefetch::run_host_step(&resolved, &project_dir, &emit) {
             report_err(
                 &mut result,
@@ -372,7 +368,6 @@ pub fn deploy_service(
     }
     for step in recipe.pre_build.iter().chain(recipe.build_steps.iter()) {
         let resolved = resolve_project_step(step, &project_dir);
-        emit(&format!("build: {}", short_cmd(&resolved)));
         match run_build_cmd(&resolved, &project_dir, &build_env, None) {
             Ok(r) if r.success => {}
             Ok(r) => {
@@ -629,10 +624,6 @@ fn tail(s: &str) -> String {
     } else {
         format!("\n--- stdout (tail) ---\n{tail}")
     }
-}
-
-fn short_cmd(s: &str) -> String {
-    s.chars().take(100).collect()
 }
 
 #[cfg(test)]
