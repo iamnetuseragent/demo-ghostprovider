@@ -12,8 +12,14 @@
 # The public key/fingerprint are published in docs/DISTRIBUTION.md; cross-check
 # the pasted key above against that document rather than trusting this comment.
 #
-# Downloads the latest tagged musl binary, verifies sha256 AND the minisign
-# signature (refusing unsigned releases), installs into ~/.local/bin.
+# Downloads the latest tagged musl binary, verifies sha256 always, and the
+# minisign signature whenever a verifier is at hand: a system minisign/rsign,
+# or a pinned static minisign binary fetched on demand from the independent
+# jedisct1/minisign release. Only if no verifier can be obtained does it fall
+# back to checksum-only. Installs into ~/.local/bin.
+#
+# git is a runtime requirement (cloning services); if missing it is
+# auto-installed via the distro package manager under sudo when possible.
 #
 # Flags: --uninstall | --tag v0.0.14 | --bin-dir DIR | --mirror codeberg
 #        | --allow-unsigned   (skip the mandatory signature check for a
@@ -26,6 +32,12 @@ BIN_NAME="demo-ghostprovider"
 DEFAULT_BIN_DIR="${HOME}/.local/bin"
 RELEASE_PUB="RWSUAckJJhM011XphIH3LQE0Ebn62qqMMQej4Ong52/rGNw/rxRKniqA"
 FINGERPRINT="D734132609C90194"
+# Pinned static minisign verifier, from the independent jedisct1/minisign
+# release (not from this repo, so a compromised leverage of our releases cannot
+# swap the verifier). sha256 locks it against upstream tampering.
+MINISIGN_URL="https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-linux.tar.gz"
+MINISIGN_SHA256="9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73"
+MINISIGN_RELPATH="minisign-linux/x86_64/minisign"
 
 TAG=""
 BIN_DIR="$DEFAULT_BIN_DIR"
@@ -64,6 +76,79 @@ old_version() {
     esac
 }
 
+# Auto-install git via the distro package manager when missing (sudo unless
+# running as root); the panel needs git to clone services. Returns 0 when git
+# is (now) available, 1 otherwise (the install still proceeds).
+ensure_git() {
+    command -v git >/dev/null 2>&1 && return 0
+    if [ "$(id -u)" = "0" ]; then
+        run_rooted() { "$@"; }
+    elif command -v sudo >/dev/null 2>&1; then
+        run_rooted() { sudo "$@"; }
+    else
+        warn "git not found and neither root nor sudo available — git is needed to deploy services"
+        return 1
+    fi
+    warn "git not found — installing via your package manager..."
+    if command -v pacman >/dev/null 2>&1; then
+        run_rooted pacman -S --noconfirm git || return 1
+    elif command -v apt-get >/dev/null 2>&1; then
+        run_rooted apt-get update || true
+        run_rooted apt-get install -y git || return 1
+    elif command -v dnf >/dev/null 2>&1; then
+        run_rooted dnf install -y git || return 1
+    else
+        warn "no supported package manager (pacman/apt/dnf) — install git manually"
+        return 1
+    fi
+    command -v git >/dev/null 2>&1
+}
+
+# Fetch the pinned static minisign verifier into $TMP. Returns 0 on success;
+# non-zero on download/hash/extract failure (caller falls back to checksum-only).
+ensure_verifier() {
+    warn "minisign/rsign not found — fetching pinned static verifier..."
+    if ! curl -fsSL -o "$TMP/minisign.tar.gz" "$MINISIGN_URL" 2>/dev/null; then
+        warn "could not download the verifier — checksum-only install (SHA-256)"
+        return 1
+    fi
+    if [ "$(sha256sum "$TMP/minisign.tar.gz" | cut -d' ' -f1)" != "$MINISIGN_SHA256" ]; then
+        warn "verifier hash mismatch — refusing it, checksum-only install (SHA-256)"
+        return 1
+    fi
+    tar -xzf "$TMP/minisign.tar.gz" -C "$TMP" 2>/dev/null
+    VERIFIER="$TMP/$MINISIGN_RELPATH"
+    if [ ! -x "$VERIFIER" ]; then
+        warn "verifier extraction failed — checksum-only install (SHA-256)"
+        return 1
+    fi
+    return 0
+}
+
+# Verify the release signature with whichever verifier is available:
+# system minisign, system rsign, or the pinned fetched static minisign.
+# Returns 0 = signature good; 1 = no verifier could be obtained
+# (checksum-only); 2 = signature FAILED (fatal).
+verify_signature() {
+    if command -v minisign >/dev/null 2>&1; then
+        ( cd "$TMP" && minisign -Vm SHA256SUMS -P "$RELEASE_PUB" ) >/dev/null 2>&1 \
+            && { ok "minisign signature verified (system minisign, key $FINGERPRINT)"; return 0; }
+        return 2
+    fi
+    if command -v rsign >/dev/null 2>&1; then
+        ( cd "$TMP" && rsign verify -P "$RELEASE_PUB" -x SHA256SUMS.minisig SHA256SUMS ) >/dev/null 2>&1 \
+            && { ok "minisign signature verified (rsign, key $FINGERPRINT)"; return 0; }
+        return 2
+    fi
+    VERIFIER=""
+    if ensure_verifier; then
+        ( cd "$TMP" && "$VERIFIER" -Vm SHA256SUMS -P "$RELEASE_PUB" ) >/dev/null 2>&1 \
+            && { ok "minisign signature verified (fetched verifier, key $FINGERPRINT)"; return 0; }
+        return 2
+    fi
+    return 1
+}
+
 if [ "$ACTION" = "uninstall" ]; then
     for f in "$BIN_DIR/$BIN_NAME"; do
         if [ -e "$f" ]; then rm -f "$f" && ok "removed $f"; fi
@@ -78,6 +163,8 @@ for dep in curl sha256sum uname tar grep; do need "$dep"; done
 
 [ "$(uname -s)" = "Linux" ] || die "prebuilt binaries are Linux-only; build from source instead"
 [ "$(uname -m)" = "x86_64" ] || die "prebuilt binaries are x86_64-only; build from source instead"
+
+ensure_git || warn "continuing without git; you can install it later"
 
 # A release tag is `v<major>.<minor>.<patch>` — anything else (a sed
 # extraction mistake, a malicious redirect) must abort, not download.
@@ -121,23 +208,17 @@ fetch "SHA256SUMS"     || die "download failed: SHA256SUMS"
 
 ( cd "$TMP" && sha256sum -c SHA256SUMS ) || die "checksum mismatch — aborting"
 
-# Signature is verified whenever a verifier (minisign/rsign) is available;
-# without one the install falls back to the SHA-256 checksum above.
-# A real signature FAILURE (with a verifier present) or a missing
-# SHA256SUMS.minisig on the release still aborts, unless --allow-unsigned.
+# Signature is verified whenever a verifier is at hand (system minisign/rsign
+# or the pinned fetched static minisign); only if none can be obtained does the
+# install fall back to the SHA-256 checksum. A real signature FAILURE or a
+# missing SHA256SUMS.minisig on the release still aborts, unless --allow-unsigned.
 fetch "SHA256SUMS.minisig" || true
 if [ -f "$TMP/SHA256SUMS.minisig" ]; then
-    if command -v minisign >/dev/null; then
-        ( cd "$TMP" && minisign -Vm SHA256SUMS -P "$RELEASE_PUB" ) \
-            || die "signature verification FAILED — aborting"
-        ok "minisign signature verified (key $FINGERPRINT)"
-    elif command -v rsign >/dev/null; then
-        ( cd "$TMP" && rsign verify -P "$RELEASE_PUB" -x SHA256SUMS.minisig SHA256SUMS ) \
-            || die "signature verification FAILED — aborting"
-        ok "minisign signature verified (key $FINGERPRINT)"
-    else
-        warn "minisign/rsign not found — checksum-only install (SHA-256)"
-    fi
+    rc=0
+    verify_signature || rc=$?
+    case "$rc" in
+        2) die "signature verification FAILED — aborting" ;;
+    esac
 elif [ "$ALLOW_UNSIGNED" -eq 1 ]; then
     warn "release has no minisign signature (SHA256SUMS.minisig) — --allow-unsigned set, checksum-only install."
 else
