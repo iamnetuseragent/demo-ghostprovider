@@ -147,7 +147,7 @@ const PREFETCH_TAIL: usize = 40;
 /// surface its error tail; a successful run shows nothing.
 fn drain_tail<R: std::io::Read>(stream: R) -> Vec<String> {
     let mut tail: Vec<String> = Vec::new();
-    for line in BufReader::new(stream).lines().flatten() {
+    for line in BufReader::new(stream).lines().map_while(Result::ok) {
         if tail.len() == PREFETCH_TAIL {
             tail.remove(0);
         }
