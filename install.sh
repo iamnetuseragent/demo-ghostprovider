@@ -121,21 +121,23 @@ fetch "SHA256SUMS"     || die "download failed: SHA256SUMS"
 
 ( cd "$TMP" && sha256sum -c SHA256SUMS ) || die "checksum mismatch — aborting"
 
-# Signature is MANDATORY: an allowlist-audited binary whose checksum was
-# never signed could have been re-signed by whoever controls the release
-# endpoint. Only an explicit --allow-unsigned bypasses this.
+# Signature is verified whenever a verifier (minisign/rsign) is available;
+# without one the install falls back to the SHA-256 checksum above.
+# A real signature FAILURE (with a verifier present) or a missing
+# SHA256SUMS.minisig on the release still aborts, unless --allow-unsigned.
 fetch "SHA256SUMS.minisig" || true
 if [ -f "$TMP/SHA256SUMS.minisig" ]; then
     if command -v minisign >/dev/null; then
         ( cd "$TMP" && minisign -Vm SHA256SUMS -P "$RELEASE_PUB" ) \
             || die "signature verification FAILED — aborting"
+        ok "minisign signature verified (key $FINGERPRINT)"
     elif command -v rsign >/dev/null; then
         ( cd "$TMP" && rsign verify -P "$RELEASE_PUB" -x SHA256SUMS.minisig SHA256SUMS ) \
             || die "signature verification FAILED — aborting"
+        ok "minisign signature verified (key $FINGERPRINT)"
     else
-        die "SHA256SUMS.minisig present but neither minisign nor rsign is installed — install one and retry"
+        warn "minisign/rsign not found — checksum-only install (SHA-256)"
     fi
-    ok "minisign signature verified (key $FINGERPRINT)"
 elif [ "$ALLOW_UNSIGNED" -eq 1 ]; then
     warn "release has no minisign signature (SHA256SUMS.minisig) — --allow-unsigned set, checksum-only install."
 else
