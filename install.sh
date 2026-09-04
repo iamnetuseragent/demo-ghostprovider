@@ -52,6 +52,18 @@ die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null || die "missing dependency: $1"; }
 
+# Version of an already-installed binary, or empty when absent/unparsable.
+# Normalized to a `v`-prefixed tag (the binary may print `0.0.19` or `v0.0.19`).
+old_version() {
+    [ -x "$1" ] || return 0
+    version=$("$1" --version 2>/dev/null | sed -n 's/.*\(v\?[0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' | head -n1)
+    [ -n "$version" ] || return 0
+    case "$version" in
+        v*) printf '%s' "$version" ;;
+        *)  printf 'v%s' "$version" ;;
+    esac
+}
+
 if [ "$ACTION" = "uninstall" ]; then
     for f in "$BIN_DIR/$BIN_NAME"; do
         if [ -e "$f" ]; then rm -f "$f" && ok "removed $f"; fi
@@ -131,8 +143,37 @@ else
 fi
 
 mkdir -p "$BIN_DIR"
-install -m755 "$TMP/$ART" "$BIN_DIR/$BIN_NAME"
-ok "installed: $BIN_DIR/$BIN_NAME"
+BIN_PATH="$BIN_DIR/$BIN_NAME"
+OLD_VER="$(old_version "$BIN_PATH")"
+if [ -n "$OLD_VER" ]; then
+    if [ "$OLD_VER" = "$TAG" ]; then
+        ok "already up to date ($OLD_VER)"
+    else
+        log "upgrading $OLD_VER -> $TAG"
+    fi
+fi
+
+# Write atomically: build the new binary in place under a temp name, then
+# `mv` it over the target so a concurrent read (or an interrupted run) never
+# sees a half-written file.
+install -m755 "$TMP/$ART" "$BIN_PATH.tmp.$$"
+mv -f "$BIN_PATH.tmp.$$" "$BIN_PATH"
+
+# The binary must actually run before we report success; otherwise roll back
+# so the user is never left with a silent broken install.
+if ! "$BIN_PATH" --show-endpoints >/dev/null 2>&1; then
+    rm -f "$BIN_PATH"
+    die "installed binary failed its self-report (--show-endpoints) — install rolled back"
+fi
+if [ -n "$OLD_VER" ]; then
+    if [ "$OLD_VER" = "$TAG" ]; then
+        ok "already up to date ($OLD_VER); refreshed $BIN_PATH"
+    else
+        ok "updated: $BIN_PATH ($OLD_VER -> $TAG)"
+    fi
+else
+    ok "installed: $BIN_PATH"
+fi
 
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
