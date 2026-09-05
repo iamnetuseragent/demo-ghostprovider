@@ -130,24 +130,6 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         tools: &["pnpm", "go"],
         loopback_only: false,
     },
-    DemoRecipe {
-        owner: "sveltejs",
-        name: "template",
-        language: "JavaScript",
-        service_name: "demo-svelte",
-        description: "Svelte starter template — official static site starter",
-        display_name: "Svelte Template",
-        commit: "5b3da65ea310f98480c5258af97ff4d5c6f9d5b0",
-        pre_build: &[],
-        prefetch_steps: &["bun install --frozen-lockfile"],
-        // PrivateNetwork is enforced: deps come only from the host prefetch.
-        build_steps: &["bun run build"],
-        start_cmd: "{self} __serve-static {project}/public {port}",
-        port: 0,
-        searxng: false,
-        tools: &["bun"],
-        loopback_only: true,
-    },
 ];
 
 /// Find a recipe by GitHub owner/name (case-insensitive).
@@ -162,14 +144,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_has_four_services() {
-        assert_eq!(DEMO_SERVICES.len(), 4);
+    fn catalog_has_three_services() {
+        assert_eq!(DEMO_SERVICES.len(), 3);
         assert_eq!(
             DEMO_SERVICES
                 .iter()
                 .map(|r| r.service_name)
                 .collect::<Vec<_>>(),
-            vec!["demo-vert", "demo-searxng", "demo-memos", "demo-svelte"]
+            vec!["demo-vert", "demo-searxng", "demo-memos"]
         );
     }
 
@@ -178,7 +160,7 @@ mod tests {
         assert!(find_recipe("VERT-sh", "VERT").is_some());
         assert!(find_recipe("vert-sh", "vert").is_some());
         assert!(find_recipe("usememos", "memos").is_some());
-        assert!(find_recipe("sveltejs", "template").is_some());
+        assert!(find_recipe("searxng", "searxng").is_some());
         assert!(find_recipe("foo", "bar").is_none());
     }
 
