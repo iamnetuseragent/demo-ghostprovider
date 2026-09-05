@@ -434,14 +434,32 @@ pub fn deploy_service(
     }
 
     // ── start + verify (polling; see units.rs / FINDINGS.md) ──
+    // A non-zero exit from `systemctl --user start` means the unit/job was
+    // rejected outright (bad unit, dead user manager), not merely slow to
+    // activate — with `--no-block` that must not be masked as a later
+    // activation check (same discipline as selftest.rs). Fail closed.
     emit("starting service...");
     let started = Command::new("systemctl")
         .args(["--user", "start", "--no-block", recipe.service_name])
         .status();
-    if started.is_err() {
-        report_err(&mut result, "failed to invoke systemctl start".into());
-        cleanup_failed(&mut result, recipe.service_name);
-        return result;
+    match started {
+        Ok(status) if status.success() => {}
+        Ok(_) => {
+            report_err(
+                &mut result,
+                format!(
+                    "systemctl start rejected the unit {} (non-zero exit)",
+                    recipe.service_name
+                ),
+            );
+            cleanup_failed(&mut result, recipe.service_name);
+            return result;
+        }
+        Err(_) => {
+            report_err(&mut result, "failed to invoke systemctl start".into());
+            cleanup_failed(&mut result, recipe.service_name);
+            return result;
+        }
     }
 
     match wait_until_active(recipe.service_name) {
