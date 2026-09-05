@@ -91,9 +91,27 @@ fn with_registry<T>(f: impl FnOnce(&mut Registry) -> T) -> T {
     f(reg)
 }
 
+/// A single net.log may grow without bound over a long-lived session; rotate
+/// at this size so the live file stays small and greppable. The rotated
+/// archive keeps the same 0600 mode (a rotating rename of an opaque file).
+const ROTATE_BYTES: u64 = 1024 * 1024;
+
 fn append_to_file(file: &std::path::Path, line: &str) {
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
+    }
+    // Rotate before appending: once the log exceeds the cap, move it aside to
+    // `<name>.1` so the live file restarts small. Best-effort — a failed
+    // rename (e.g. a stale `.1` from an interrupted run) degrades to appending
+    // to the current file rather than dropping the record.
+    if std::fs::metadata(file).map(|m| m.len()).unwrap_or(0) >= ROTATE_BYTES {
+        let rotated = rotated_path(file);
+        let _ = std::fs::rename(file, &rotated);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&rotated, std::fs::Permissions::from_mode(0o600));
+        }
     }
     // mode 0600: the log traces every outbound request host+path — a privacy
     // record other local users must not read. Enforced on every append (not
@@ -114,6 +132,13 @@ fn append_to_file(file: &std::path::Path, line: &str) {
         }
         let _ = writeln!(f, "{line}");
     }
+}
+
+/// `<dir>/net.log` → `<dir>/net.log.1`
+fn rotated_path(file: &std::path::Path) -> std::path::PathBuf {
+    let mut name = file.file_name().unwrap_or_default().to_os_string();
+    name.push(".1");
+    file.with_file_name(name)
 }
 
 /// Record one outbound attempt. Called by the HTTP client *and* by the local
@@ -241,5 +266,53 @@ mod tests {
         // 2026-08-23 == days since epoch 20688
         assert_eq!(civil_from_days(20_688), (2026, 8, 23));
         assert_eq!(civil_from_days(0), (1970, 1, 1));
+    }
+
+    #[test]
+    fn rotated_path_maps_to_sibling_dot_1() {
+        let p = std::path::Path::new("/x/net.log");
+        assert_eq!(rotated_path(p), std::path::PathBuf::from("/x/net.log.1"));
+    }
+
+    #[test]
+    fn log_rotates_at_cap() {
+        let dir = std::env::temp_dir().join(format!(
+            "dgp-netlog-rot-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("net.log");
+
+        let big = "x".repeat(ROTATE_BYTES as usize + 64);
+        append_to_file(&file, &big); // first write pushes past the cap
+        append_to_file(&file, "y"); // second write must rotate the old file
+        assert!(file.exists(), "fresh log re-created after rotation");
+        assert!(
+            rotated_path(&file).exists(),
+            "oversized log must be moved to net.log.1"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            if rotated_path(&file).exists() {
+                assert_eq!(
+                    std::fs::metadata(rotated_path(&file))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
