@@ -72,6 +72,10 @@ jobs:
           cp "/src/target/x86_64-unknown-linux-musl/release/${BIN}" \
              "dist/${BIN}-${VERSION}-x86_64-linux-musl"
           ( cd dist && sha256sum "${BIN}-${VERSION}-x86_64-linux-musl" > SHA256SUMS )
+          # dist/* becomes the release assets, so the committed local-only
+          # signature must ride along: install.sh verifies SHA256SUMS.minisig
+          # against the checksums it downloaded.
+          cp release/SHA256SUMS.minisig dist/
 
       - name: Verify committed signature + reproducible checksums
         run: |
