@@ -15,6 +15,13 @@
 //! the *downloader tool* of the deployed services during the host-side prefetch
 //! phase (before the sandboxed build), not by this binary; that distinction is
 //! documented in README ("Security model"). See `src/hoster/prefetch.rs`.
+//!
+//! The one exception is the VERT recipe's two paraglide-js plugin modules from
+//! `cdn.jsdelivr.net`: those ARE fetched by this binary, through the same
+//! allowlisted client (so the host is a permitted, net.log-visible endpoint)
+//! and are additionally pinned by content SHA-256 at the recipe level. They
+//! execute inside the offline sandboxed build like any other dependency, but
+//! never from silently drifted bytes. See `prefetch.rs::seed_paraglide_plugins`.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -41,8 +48,17 @@ use std::time::SystemTime;
 /// other, and the fetched bytes are re-verified by `go` against its checksum
 /// database before extraction runs — this path only saves bytes, never
 /// trusts them.
+///
+/// `cdn.jsdelivr.net` is the CDN for the two paraglide-js *plugin* modules
+/// the VERT recipe pre-seeds into `project.inlang/cache/plugins` (see
+/// `prefetch.rs::seed_paraglide_plugins`). Unlike the shell prefetch steps,
+/// that fetch runs inside this binary — through the allowlisted client, so
+/// the permit is net.log-visible — and the content is additionally pinned by
+/// content SHA-256 at the recipe level: the CDN can only ever serve
+/// byte-identical plugin bytes, never a silent surprise.
 pub const ALLOWED_ENDPOINTS: &[&str] = &[
     "api.github.com",
+    "cdn.jsdelivr.net",
     "github.com",
     "raw.githubusercontent.com",
     "codeload.github.com",
@@ -240,13 +256,15 @@ mod tests {
             ALLOWED_ENDPOINTS,
             &[
                 "api.github.com",
+                "cdn.jsdelivr.net",
                 "github.com",
                 "raw.githubusercontent.com",
                 "codeload.github.com",
                 "proxy.golang.org",
                 "storage.googleapis.com"
             ],
-            "allowlist changed — update README 'Security model' in the same commit"
+            "allowlist changed — keep the docs in netlog.rs and \
+             tests/pin_allowlist.rs in sync in the same commit"
         );
     }
 

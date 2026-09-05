@@ -15,11 +15,19 @@
 //! the data flow documented in `netlog.rs` honest: registry bytes cross the
 //! network via the downloader tool (which already did so from inside the
 //! sandbox before), not via this binary's allowlisted client.
+//!
+//! One deliberate exception is the VERT recipe's two paraglide-js *plugins*:
+//! they are fetched by this binary, through the allowlisted client (so
+//! `cdn.jsdelivr.net` is a permitted, net.log-visible endpoint) and are
+//! pinned by content SHA-256 at the recipe level. See
+//! [`seed_paraglide_plugins`].
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
+
+use anyhow::Context;
 
 /// Wheelhouse directory for a recipe's pip dependencies, under the project's
 /// persistent cache (kept in sync with the pip cache env in `sandbox.rs`).
@@ -33,12 +41,10 @@ fn wheelhouse(project_dir: &Path) -> std::path::PathBuf {
 /// hash of the module URL rendered in base36. Since those plugins resolve
 /// Network-First at compile time, a build under `PrivateNetwork=yes` needs
 /// them pre-seeded on local disk; this name is the other half of that pair
-/// (the recipe's prefetch step downloads each module into exactly this path).
-///
-/// Test-only: the recipe hardcodes the two current filenames; this helper
-/// re-derives them so the guard tests catch any settings.json drift.
-#[cfg(test)]
-fn paraglide_cache_name(module_url: &str) -> String {
+/// ([`seed_paraglide_plugins`] downloads each module into exactly this
+/// path). The recipe hardcodes the two current filenames; the guard tests in
+/// this module re-derive them so a settings.json drift is caught.
+pub(crate) fn paraglide_cache_name(module_url: &str) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
     for b in module_url.bytes() {
         hash ^= u64::from(b);
@@ -57,6 +63,88 @@ fn paraglide_cache_name(module_url: &str) -> String {
     }
     out.reverse();
     String::from_utf8(out).expect("base36 digits are ascii")
+}
+
+/// Lowercase-hex SHA-256 of `bytes` — the form recipe plugin pins are stored
+/// in and compared against.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let mut out = String::with_capacity(64);
+    for b in hasher.finalize() {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+/// Verify `bytes` against a pinned lowercase-hex SHA-256 (the pin comparison
+/// is case-insensitive so hand-copied hex in a recipe can't silently shift
+/// the trust anchor's rendering).
+fn verify_pin(bytes: &[u8], pinned: &str) -> Result<(), String> {
+    let got = sha256_hex(bytes);
+    if got == pinned.to_ascii_lowercase() {
+        Ok(())
+    } else {
+        Err(format!("sha256 mismatch (want {pinned}, got {got})"))
+    }
+}
+
+/// Seed the VERT recipe's paraglide-js remote plugins into
+/// `project.inlang/cache/plugins/` — the cache the *offline* sandboxed build
+/// reads (Network-First plugin resolution under `PrivateNetwork=yes` needs
+/// them pre-seeded).
+///
+/// This is the one host-phase fetch this binary performs itself (the rest
+/// go through the recipe's downloader tool), so it is deliberately routed
+/// through the allowlisted client: `cdn.jsdelivr.net` is a permitted,
+/// net.log-visible endpoint, and the content is additionally pinned by
+/// content SHA-256 in the recipe. Every plugin is downloaded and verified
+/// BEFORE anything is placed, and each is staged as a `.seed-*` dotfile,
+/// renamed into its final cache name only after ALL plugins verified. A
+/// partial or drifted seed is therefore never presented to the offline
+/// build — the same fail-closed contract as the old `curl` shell step it
+/// replaces.
+pub fn seed_paraglide_plugins(
+    project_dir: &Path,
+    spec: &[(&str, &str)],
+) -> anyhow::Result<()> {
+    let plugins_dir = project_dir
+        .join("project.inlang")
+        .join("cache")
+        .join("plugins");
+    std::fs::create_dir_all(&plugins_dir).with_context(|| {
+        format!("prefetch: create plugin cache {}", plugins_dir.display())
+    })?;
+    seed_pinned_plugins(&plugins_dir, spec, &crate::hoster::httpclient::get_bytes)
+}
+
+/// Testable core of [`seed_paraglide_plugins`]: `fetch` is injected so the
+/// network path is unit-testable offline. Contract: nothing is renamed until
+/// every spec has downloaded and verified.
+fn seed_pinned_plugins(
+    plugins_dir: &Path,
+    spec: &[(&str, &str)],
+    fetch: &dyn Fn(&str) -> anyhow::Result<Vec<u8>>,
+) -> anyhow::Result<()> {
+    let mut staged: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+    for (url, pinned) in spec {
+        let bytes = fetch(url).with_context(|| format!("prefetch: plugin fetch {url}"))?;
+        verify_pin(&bytes, pinned)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("prefetch: plugin {url}"))?;
+        let cache_name = paraglide_cache_name(url);
+        let stage = plugins_dir.join(format!(".seed-{cache_name}"));
+        crate::atomic::write_atomic(&stage, &bytes)
+            .with_context(|| format!("prefetch: stage plugin {url}"))?;
+        staged.push((stage, plugins_dir.join(cache_name)));
+    }
+    for (stage, final_path) in staged {
+        std::fs::rename(&stage, &final_path).with_context(|| {
+            format!("prefetch: place plugin {}", final_path.display())
+        })?;
+    }
+    Ok(())
 }
 
 /// The cache-env redirects for `bun`/`pnpm` live in `sandbox.rs::cache_env`;
@@ -294,5 +382,101 @@ mod tests {
             "2hvyo96lq8v0r",
             "FNV1a-64 base36 of \"hello\""
         );
+    }
+
+    /// Live, ignored by default (network): fetch BOTH pinned paraglide
+    /// plugins through the real httpclient path and confirm the bytes the
+    /// binary would seed are byte-identical to the recipe pins. Run manually
+    /// after a pin bump (`cargo test -- --ignored live_pins`) — a CDN serving
+    /// different bytes under the same URL would fail this and the deploy.
+    #[test]
+    #[ignore = "network — run manually to re-pin after a recipe change"]
+    fn live_pins_match_what_the_client_actually_fetches() {
+        let mf_url = "https://cdn.jsdelivr.net/npm/@inlang/plugin-message-format@4/dist/index.js";
+        let fm_url = "https://cdn.jsdelivr.net/npm/@inlang/plugin-m-function-matcher@2/dist/index.js";
+        let mf = crate::hoster::httpclient::get_bytes(mf_url).unwrap();
+        let fm = crate::hoster::httpclient::get_bytes(fm_url).unwrap();
+        let mf_pin = "b22cf60eb28b3c8c3ce1fb6300611a0552f12d0d995d37c4dd2c96e3ad80c645";
+        let fm_pin = "85862f6305793b56bfd9afe5368b096e63fb2aeab38b7799c051517be3499c0b";
+        assert_eq!(sha256_hex(&mf), mf_pin, "plugin-message-format bytes changed");
+        assert_eq!(sha256_hex(&fm), fm_pin, "plugin-m-function-matcher bytes changed");
+    }
+
+    #[test]
+    fn sha256_hex_well_known_vector() {
+        // SHA-256("abc") is a published test vector.
+        let digest = sha256_hex(b"abc");
+        assert_eq!(
+            digest,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn verify_pin_ok_and_mismatch() {
+        let bytes = b"plugin-bytes";
+        let good = sha256_hex(bytes);
+        assert!(verify_pin(bytes, &good).is_ok());
+        assert!(verify_pin(bytes, "0000000000000000000000000000000000000000000000000000000000000000").is_err());
+    }
+
+    #[test]
+    fn seed_pinned_plugins_places_files_and_leaves_no_dotfiles() {
+        let dir = std::env::temp_dir().join(format!("gp-seed-ok-{}", std::process::id()));
+        let plugins = dir.join("project.inlang/cache/plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+
+        let a = b"plugin-a";
+        let b = b"plugin-b";
+        let a_sha = sha256_hex(a);
+        let b_sha = sha256_hex(b);
+        let a_url = "https://cdn.jsdelivr.net/npm/@inlang/plugin-message-format@4/dist/index.js";
+        let b_url = "https://cdn.jsdelivr.net/npm/@inlang/plugin-m-function-matcher@2/dist/index.js";
+
+        let spec: Vec<(&str, &str)> = vec![(a_url, &a_sha), (b_url, &b_sha)];
+        let fake_fetch = |url: &str| -> anyhow::Result<Vec<u8>> {
+            if url == a_url { Ok(a.to_vec()) } else { Ok(b.to_vec()) }
+        };
+        seed_pinned_plugins(&plugins, &spec, &fake_fetch).unwrap();
+
+        assert_eq!(std::fs::read(plugins.join(paraglide_cache_name(a_url))).unwrap(), a);
+        assert_eq!(std::fs::read(plugins.join(paraglide_cache_name(b_url))).unwrap(), b);
+        // No staging dotfiles remain after a successful seed.
+        assert!(
+            plugins.read_dir().unwrap().all(|e| {
+                let name = e.unwrap().file_name();
+                !name.to_string_lossy().starts_with(".seed-")
+            }),
+            "staging dotfiles must be renamed away"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seed_pinned_plugins_rejects_drift_and_places_nothing_final() {
+        let dir = std::env::temp_dir().join(format!("gp-seed-fail-{}", std::process::id()));
+        let plugins = dir.join("project.inlang/cache/plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+
+        let a = b"plugin-a";
+        let a_sha = sha256_hex(a);
+        let a_url = "https://cdn.jsdelivr.net/npm/@inlang/plugin-message-format@4/dist/index.js";
+        let b_url = "https://cdn.jsdelivr.net/npm/@inlang/plugin-m-function-matcher@2/dist/index.js";
+
+        // First URL correct, second URL wrong pin.
+        let spec: Vec<(&str, &str)> = vec![(a_url, &a_sha), (b_url, "0000000000000000000000000000000000000000000000000000000000000000")];
+        let fake_fetch = |url: &str| -> anyhow::Result<Vec<u8>> {
+            if url == a_url { Ok(a.to_vec()) } else { Ok(b"wrong-plugin".to_vec()) }
+        };
+        let err = seed_pinned_plugins(&plugins, &spec, &fake_fetch).unwrap_err();
+        let report = format!("{err:#}");
+        assert!(report.contains("sha256 mismatch"), "{report}");
+        // Final cache-name files must never appear (the offline build must not see them).
+        assert!(!plugins.join(paraglide_cache_name(a_url)).exists());
+        assert!(!plugins.join(paraglide_cache_name(b_url)).exists());
+        // Staged dotfile for the first plugin exists (verify happened, then rename phase
+        // never ran) — this is safe; the loader does not serve dotfiles.
+        assert!(plugins.join(format!(".seed-{}", paraglide_cache_name(a_url))).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

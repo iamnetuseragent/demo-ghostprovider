@@ -28,6 +28,15 @@ pub struct DemoRecipe {
     /// `setup.py`/`postinstall` is not executed on the host (see the security
     /// invariant at the top of `prefetch.rs`).
     pub prefetch_steps: &'static [&'static str],
+    /// Host-phase pinned paraglide-js plugin seeds (VERT recipe only; empty
+    /// for the others). Each entry is `(jsdelivr module URL as written in
+    /// `project.inlang/settings.json`, lowercase-hex SHA-256 of the file
+    /// jsdelivr must serve at that URL)`. Fetched through the allowlisted
+    /// client (`cdn.jsdelivr.net` — a permitted, net.log-visible host) and
+    /// content-pinned so a silent version lift under the same `@N` major tag
+    /// fails the deploy instead of feeding changed third-party code into the
+    /// offline build.
+    pub plugins: &'static [(&'static str, &'static str)],
     /// Placeholders: {bin} {venv} {python} {project} {port} {self}
     /// {self} expands to this binary — used by the built-in static server.
     pub start_cmd: &'static str,
@@ -52,34 +61,41 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         display_name: "VERT",
         commit: "cc7b5a54d5e9c797b377db47b9bdfbb561707783",
         pre_build: &["if [ -f .env.example ] && [ ! -f .env ]; then cp .env.example .env; fi"],
-        // Two-stage prefetch. The first fills node_modules/caches; the second
-        // pre-seeds paraglide-js's remote *plugin* cache (`project.inlang/
-        // cache/plugins/<fnv1a(module-url)>` — gitignored, so absent in a
-        // fresh pinned tree). At build time paraglide-js resolves the plugins
-        // Network-First (see @inlang/sdk plugin/cache.js): it WARNS rather
-        // than failing compile when offline, but emits a broken i18n tree and
-        // SvelteKit's prerender then dies with `[500] /`. Seeding the exact
-        // files makes the offline build deterministic. Filenames are
-        // FNV1a-64(base36) of the module URLs in project.inlang/settings.json
-        // — re-derive them (`prefetch.rs::paraglide_cache_name`) when a pin
-        // bump changes those modules. Both modules are staged as `.tmp-*` and
-        // renamed ONLY after both downloads succeed (fail closed): a partial
-        // seed is never presented to the sandboxed build.
+        // bun install fills node_modules/caches; the two paraglide-js plugin
+        // modules are seeded separately (see `plugins` below and
+        // `prefetch.rs::seed_paraglide_plugins`). Both the shell prefetch and
+        // the Rust plugin seed run before the sandboxed build, which itself
+        // must be fully offline (PrivateNetwork=yes — see sandbox.rs).
         prefetch_steps: &[
             "bun install --frozen-lockfile",
-            "curl -fsSL --create-dirs https://cdn.jsdelivr.net/npm/@inlang/plugin-message-format@4/dist/index.js -o project.inlang/cache/plugins/.tmp-mf && curl -fsSL https://cdn.jsdelivr.net/npm/@inlang/plugin-m-function-matcher@2/dist/index.js -o project.inlang/cache/plugins/.tmp-fm && mv project.inlang/cache/plugins/.tmp-mf project.inlang/cache/plugins/2sy648wh9sugi && mv project.inlang/cache/plugins/.tmp-fm project.inlang/cache/plugins/ygx0uiahq6uw",
+        ],
+        // Pinned (url, sha256) paraglide-js plugin modules.  Fetched through
+        // the allowlisted client (net.log-visible) and verified against these
+        // digests *before* any file is placed — a CDN content drift under the
+        // same `@N` major tag fails the deploy instead of feeding silently
+        // changed code into the offline build. The URLs are identical to
+        // project.inlang/settings.json so the FNV1a-64 filenames match (see
+        // prefetch.rs::paraglide_cache_name and the guard tests there).
+        plugins: &[
+            (
+                "https://cdn.jsdelivr.net/npm/@inlang/plugin-message-format@4/dist/index.js",
+                "b22cf60eb28b3c8c3ce1fb6300611a0552f12d0d995d37c4dd2c96e3ad80c645",
+            ),
+            (
+                "https://cdn.jsdelivr.net/npm/@inlang/plugin-m-function-matcher@2/dist/index.js",
+                "85862f6305793b56bfd9afe5368b096e63fb2aeab38b7799c051517be3499c0b",
+            ),
         ],
         // PrivateNetwork is enforced: deps come ONLY from the host prefetch
-        // (which just ran `bun install` + the paraglide plugin seed above,
-        // filling node_modules/caches + the inlang plugin cache). The
-        // sandboxed build itself is fully offline.
+        // (bun install + the pinned plugin seed above). The sandboxed build
+        // itself is fully offline.
         build_steps: &["bun run build"],
         // Served by THIS binary (built-in static server) instead of shelling
         // out to `python -m http.server`: one less host dependency.
         start_cmd: "{self} __serve-static {project}/build {port}",
         port: 0,
         searxng: false,
-        tools: &["bun", "curl"],
+        tools: &["bun"],
         loopback_only: true,
     },
     DemoRecipe {
@@ -101,6 +117,7 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         start_cmd: "{venv} -m searx.webapp",
         port: 8888,
         searxng: true,
+        plugins: &[],
         tools: &["python3"],
         loopback_only: false,
     },
@@ -127,6 +144,7 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         start_cmd: "{bin} --port {port}",
         port: 0,
         searxng: false,
+        plugins: &[],
         tools: &["pnpm", "go"],
         loopback_only: false,
     },
@@ -203,6 +221,45 @@ mod tests {
                     r.service_name,
                     r.tools
                 );
+            }
+        }
+    }
+
+    /// Only VERT may carry plugin pins (the others have none), and every pin
+    /// must be a jsdelivr paraglide module whose cache filename matches the
+    /// FNV1a-64 derivation and whose SHA-256 is well-formed hex. This is the
+    /// guard that keeps a recipe plugin bump honest.
+    #[test]
+    fn plugin_pins_are_paraglide_jsdelivr_and_well_formed() {
+        for r in DEMO_SERVICES {
+            assert!(
+                r.plugins.len() <= 2,
+                "{}: unexpected plugin count {}",
+                r.service_name,
+                r.plugins.len()
+            );
+            if r.service_name != "demo-vert" {
+                assert!(r.plugins.is_empty(), "{}: non-VERT plugin pins", r.service_name);
+            }
+            for (url, sha) in r.plugins {
+                assert!(
+                    url.starts_with("https://cdn.jsdelivr.net/npm/@inlang/plugin-"),
+                    "{}: plugin URL must be a jsdelivr @inlang module: {url}",
+                    r.service_name
+                );
+                assert_eq!(
+                    sha.len(),
+                    64,
+                    "{}: plugin {url} SHA-256 must be 64 hex chars",
+                    r.service_name
+                );
+                assert!(
+                    sha.bytes().all(|b| b.is_ascii_hexdigit()),
+                    "{}: plugin {url} SHA-256 is not hex",
+                    r.service_name
+                );
+                // Cache filename must match the URL's FNV1a-64 base36 name.
+                super::super::prefetch::paraglide_cache_name(url);
             }
         }
     }

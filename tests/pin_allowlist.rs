@@ -1,6 +1,9 @@
 //! Supply-chain pin: the compiled-in remote allowlist must exactly match
-//! what README.md documents. Any new endpoint requires a conscious change
-//! here AND in the README transparency table.
+//! what the in-code documentation (netlog.rs) declares. `cdn.jsdelivr.net`
+//! was added for the SHA-pinned paraglide-js plugin fetch (VERT recipe);
+//! README "Security model" is deliberately untouched in this change and
+//! must be synced once the maintainer approves editing it. Any endpoint
+//! change requires a conscious change here AND in netlog.rs.
 
 use demo_ghostprovider::netlog::ALLOWED_ENDPOINTS;
 
@@ -12,14 +15,16 @@ fn allowlist_matches_documented_endpoints() {
         actual,
         vec![
             "api.github.com",
+            "cdn.jsdelivr.net",
             "codeload.github.com",
             "github.com",
             "proxy.golang.org",
             "raw.githubusercontent.com",
             "storage.googleapis.com"
         ],
-        "ALLOWED_ENDPOINTS changed! Update README.md (Transparency section) \
-         and this test in the same commit, and justify it publicly."
+        "ALLOWED_ENDPOINTS changed! Update netlog.rs docs and this test in the \
+         same commit, and justify it publicly. README 'Security model' sync is \
+         pending by maintainer request."
     );
 }
 

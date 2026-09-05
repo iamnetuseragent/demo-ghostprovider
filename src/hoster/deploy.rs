@@ -314,6 +314,27 @@ pub fn deploy_service(
             return result;
         }
     }
+    // Pinned paraglide-js plugin seed (VERT). Fetched through the allowlisted
+    // client and verified against recipe SHA-256 pins before anything is
+    // placed; fail closed exactly like the prefetch steps above — the offline
+    // build would otherwise resolve a broken (or drifted) plugin tree.
+    if !recipe.plugins.is_empty() {
+        match super::prefetch::seed_paraglide_plugins(&project_dir, recipe.plugins) {
+            Ok(()) => emit(&format!(
+                "build: seeded {} paraglide plugin(s) (SHA-256 verified)",
+                recipe.plugins.len()
+            )),
+            Err(e) => {
+                report_err(
+                    &mut result,
+                    format!(
+                        "Pinned paraglide plugin seed failed: {e:#}\nThe build sandbox has PrivateNetwork=yes; the plugins must be fetched and verified on the host. Refusing to build against unverified plugin bytes."
+                    ),
+                );
+                return result;
+            }
+        }
+    }
 
     // ── build ──
     // Go services: pre-seed the toolchain module into a file:// GOPROXY
