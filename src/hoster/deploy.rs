@@ -448,6 +448,7 @@ pub fn deploy_service(
         env_file: env_file.as_deref(),
         extra_env: &[],
         loopback_only: recipe.loopback_only,
+        res: recipe.res,
     };
     if let Err(e) = create_unit(&spec) {
         report_err(&mut result, format!("unit creation failed: {e:#}"));
@@ -675,6 +676,7 @@ mod tests {
     /// README promise: deleting a service wipes the clone together with its
     /// caches — but only inside services_dir.
     #[test]
+    #[allow(unsafe_code)] // test-only env mutation (XDG_DATA_HOME)
     fn wipe_removes_clone_inside_services_dir_only() {
         let _env = ENV_LOCK.lock().unwrap();
         let tmp = std::env::temp_dir().join(format!(
@@ -702,6 +704,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)] // test-only env mutation (XDG_DATA_HOME)
     fn wipe_refuses_paths_outside_services_dir() {
         let _env = ENV_LOCK.lock().unwrap();
         let tmp = std::env::temp_dir().join(format!("dgp-wipe-guard-{}", std::process::id()));

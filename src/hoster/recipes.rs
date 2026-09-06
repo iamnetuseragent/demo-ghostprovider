@@ -49,6 +49,10 @@ pub struct DemoRecipe {
     /// example): the unit gets `IPAddressAllow=loopback` so a compromised
     /// build output can never call out to the internet.
     pub loopback_only: bool,
+    /// systemd resource caps for the deployed unit (cgroup memory/tasks
+    /// bounds): a runaway demo service must never grind the whole user
+    /// session. See `units.rs::ResourceLimits`.
+    pub res: crate::hoster::units::ResourceLimits,
 }
 
 pub const DEMO_SERVICES: &[DemoRecipe] = &[
@@ -67,7 +71,13 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         // the Rust plugin seed run before the sandboxed build, which itself
         // must be fully offline (PrivateNetwork=yes — see sandbox.rs).
         prefetch_steps: &[
-            "bun install --frozen-lockfile",
+            // --ignore-scripts: keep the host-phase prefetch script-free. bun
+            // does not run dependency lifecycle scripts by default, but it DOES
+            // run the root project's pre/postinstall/prepare scripts and any
+            // packages named in this repo's trustedDependencies — both would
+            // execute on the host, outside the sandbox. The flag blocks all of
+            // them; VERT's build needs no postinstall (verified offline).
+            "bun install --frozen-lockfile --ignore-scripts",
         ],
         // Pinned (url, sha256) paraglide-js plugin modules.  Fetched through
         // the allowlisted client (net.log-visible) and verified against these
@@ -97,6 +107,13 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         searxng: false,
         tools: &["bun"],
         loopback_only: true,
+        res: crate::hoster::units::ResourceLimits {
+            memory_high: Some("256M"),
+            memory_max: Some("384M"),
+            tasks_max: Some("300"),
+            limit_nofile: Some(65536),
+            oom_score_adjust: Some(0),
+        },
     },
     DemoRecipe {
         owner: "searxng",
@@ -120,6 +137,13 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         plugins: &[],
         tools: &["python3"],
         loopback_only: false,
+        res: crate::hoster::units::ResourceLimits {
+            memory_high: Some("768M"),
+            memory_max: Some("1536M"),
+            tasks_max: Some("512"),
+            limit_nofile: Some(65536),
+            oom_score_adjust: Some(-100),
+        },
     },
     DemoRecipe {
         owner: "usememos",
@@ -133,6 +157,14 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         // pnpm fetch fills the virtual store from the lockfile WITHOUT
         // building node_modules or running any lifecycle script; the sandboxed
         // install links node_modules from that warm store, offline.
+        //
+        // Flag discipline (keep these exact):
+        //   * `fetch` NOT `install` — install would build the tree and could
+        //     run the repo's lifecycle scripts on the host, outside the sandbox.
+        //   * `--store-dir` pins the store to the project cache directory.
+        // The offline install below must never drop `--offline`: the sandbox
+        // has PrivateNetwork=yes and would fail (or, worse, a future network
+        // change could let it fall back to the registry mid-build).
         prefetch_steps: &["pnpm --dir web fetch --store-dir {project}/.ghost-cache/pnpm"],
         build_steps: &[
             // PrivateNetwork is enforced: --offline is required since the
@@ -147,6 +179,13 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         plugins: &[],
         tools: &["pnpm", "go"],
         loopback_only: false,
+        res: crate::hoster::units::ResourceLimits {
+            memory_high: Some("512M"),
+            memory_max: Some("1024M"),
+            tasks_max: Some("512"),
+            limit_nofile: Some(65536),
+            oom_score_adjust: Some(0),
+        },
     },
 ];
 
@@ -180,6 +219,22 @@ mod tests {
         assert!(find_recipe("usememos", "memos").is_some());
         assert!(find_recipe("searxng", "searxng").is_some());
         assert!(find_recipe("foo", "bar").is_none());
+    }
+
+    /// A deployed service must carry a resource budget: `none()` is only for
+    /// the selftest unit, never for a catalog service. A service with no
+    /// memory/tasks cap can exhaust the user session.
+    #[test]
+    fn every_catalog_service_has_resource_limits() {
+        for r in DEMO_SERVICES {
+            let res = r.res;
+            assert!(
+                res.memory_max.is_some() && res.tasks_max.is_some(),
+                "{}: recipe must set memory_max and tasks_max (got {:?})",
+                r.service_name,
+                res
+            );
+        }
     }
 
     /// Audit lesson: every build step's interpreter must be declared in
@@ -221,6 +276,41 @@ mod tests {
                     r.service_name,
                     r.tools
                 );
+            }
+        }
+    }
+
+    /// Host-phase prefetch steps may never execute fetched package or project
+    /// code on the host. bun install runs the root project's lifecycle scripts
+    /// and any packages named in the repo's trustedDependencies, so it must be
+    /// pinned with --ignore-scripts; pnpm/fetch does not run lifecycle scripts
+    /// by design; pip must be pinned to binary-only wheels (inert archives).
+    #[test]
+    fn prefetch_steps_never_run_lifecycle_scripts_on_host() {
+        for r in DEMO_SERVICES {
+            for step in r.prefetch_steps {
+                let base = step.split_whitespace().next().unwrap();
+                match base {
+                    "bun" => assert!(
+                        step.contains("--ignore-scripts"),
+                        "{}: bun prefetch must use --ignore-scripts, found: '{step}'",
+                        r.service_name
+                    ),
+                    "pnpm" => assert!(
+                        step.split_whitespace().any(|w| w == "fetch"),
+                        "{}: pnpm prefetch must be a script-free `fetch`, found: '{step}'",
+                        r.service_name
+                    ),
+                    "python3" => assert!(
+                        step.contains("--only-binary=:all:"),
+                        "{}: pip prefetch must pin binary-only wheels, found: '{step}'",
+                        r.service_name
+                    ),
+                    other => panic!(
+                        "{}: prefetch step starts with unexpected tool '{other}'",
+                        r.service_name
+                    ),
+                }
             }
         }
     }

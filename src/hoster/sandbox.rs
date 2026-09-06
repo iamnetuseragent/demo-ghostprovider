@@ -7,6 +7,14 @@
 //!
 //! HONESTY NOTE (do not remove): this is a blast-radius reducer, NOT a trust
 //! boundary — the build runs as the same user. See README threat model.
+//!
+//! Unsafe is required here for raw syscalls the hardened build depends on:
+//! `libc::geteuid`/`getgid` (privilege-drop preflight) and setrlimit keeps
+//! under `systemd-run` arcens as a defense-in-depth envelope. All calls are
+//! async-signal-safe argumentless syscalls; nothing dereferences foreign
+//! memory or runs untrusted pointers.
+
+#![allow(unsafe_code)]
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -20,14 +28,21 @@ const SANDBOX_PROPERTIES: &[&str] = &[
     "ProtectSystem=strict",
     "ProtectHome=read-only",
     "PrivateDevices=yes",
+    "PrivateIPC=yes",
+    "ProtectClock=yes",
+    "ProtectHostname=yes",
+    "ProtectKernelLogs=yes",
+    "ProtectProc=invisible",
     "ProtectControlGroups=yes",
     "ProtectKernelTunables=yes",
     "ProtectKernelModules=yes",
     "RestrictNamespaces=yes",
+    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
     "LockPersonality=yes",
     "RestrictRealtime=yes",
     "RestrictSUIDSGID=yes",
     "CapabilityBoundingSet=",
+    "UMask=0077",
 ];
 
 /// Per build-step budget. Generous because `bun install`/`pnpm install` on a
@@ -61,15 +76,37 @@ const SCRUBBED_ENV_VARS: &[&str] = &[
     "BUN_AUTH_TOKEN",
 ];
 
+/// Ambient session endpoints a build/prefetch must never inherit either,
+/// although they are not credentials: AF_UNIX sockets and displays stay
+/// reachable from the unit despite `PrivateNetwork=yes` (socket namespaces
+/// are not network namespaces, so an SSH agent, D-Bus and X11 remain
+/// connectable by path). Dropping the env pointer is what keeps a hostile
+/// `postinstall`/`build.rs`/`setup.py` from walking into `ssh-add`, D-Bus or
+/// the X server. The sockets themselves stay in /run/user and could in theory
+/// be guessed by path — the practical vector is the ambient env, and it is
+/// removed here (see also `XDG_RUNTIME_DIR` redirect in `cache_env`).
+const SCRUBBED_AMBIENT_VARS: &[&str] = &[
+    "SSH_AUTH_SOCK",
+    "SSH_ASKPASS",
+    "GPG_AGENT_INFO",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "XDG_RUNTIME_DIR",
+];
+
 /// Variable-name patterns that identify credentials regardless of their exact
 /// name, so a future session secret cannot slip through a stale denylist.
 const SCRUBBED_ENV_PATTERNS: &[&str] =
     &["TOKEN", "PASSWORD", "SECRET", "OPENCHAMBER_", "OPENCODE_"];
 
-/// Whether an env-var name looks like a credential (token/password/secret or
-/// an openchamber/opencode session secret such as the agent-tool token).
-fn is_credential_name(name: &str) -> bool {
+/// Whether an env-var name must never reach a build/prefetch child: a
+/// credential (token/password/secret or an openchamber/opencode session secret
+/// such as the agent-tool token) or an ambient session socket/display pointer.
+fn is_scrubbed_name(name: &str) -> bool {
     SCRUBBED_ENV_VARS.contains(&name)
+        || SCRUBBED_AMBIENT_VARS.contains(&name)
         || SCRUBBED_ENV_PATTERNS
             .iter()
             .any(|p| name.contains(p) || name.to_ascii_uppercase().contains(p))
@@ -207,16 +244,11 @@ pub fn sandbox_warning() -> Option<&'static str> {
     }
 }
 
-/// Drop credential-bearing variables from a child environment.
-fn scrub_env(run_env: &mut BTreeMap<String, String>) {
-    run_env.retain(|k, _| !is_credential_name(k));
-}
-
-/// The canonical list of credential variable names the sandbox (and the host
-/// prefetch runner) must never pass to a child process. Exposed so the
-/// prefetch phases scrub with the identical policy.
-pub fn sandbox_scrub_denylist() -> &'static [&'static str] {
-    SCRUBBED_ENV_VARS
+/// Drop scrubbed (credential + ambient-socket) variables from a child
+/// environment. Pub(crate) so the host prefetch runner scrubs with the
+/// identical policy (`prefetch.rs::host_env`).
+pub(crate) fn scrub_env(run_env: &mut BTreeMap<String, String>) {
+    run_env.retain(|k, _| !is_scrubbed_name(k));
 }
 
 /// Cache/home redirects applied inside the build sandbox. Exposed so the
@@ -259,6 +291,12 @@ fn cache_env(project_dir: Option<&Path>) -> BTreeMap<&'static str, String> {
         // whatever session tokens live there). The redirect target itself is a
         // scratch dir under the project, only populated by the build step.
         ("HOME", m("home")),
+        // XDG_RUNTIME_DIR re-pointed for the same reason as HOME: tools that
+        // create runtime sockets/keyrings must not default to the invoking
+        // user's /run/user/<uid> (whose SSH_AUTH_SOCK/agent sockets and D-Bus
+        // live alongside the caller). The redirected target is a scratch dir
+        // under the project, only populated by the build step.
+        ("XDG_RUNTIME_DIR", m("runtime")),
     ])
 }
 
@@ -550,6 +588,35 @@ mod tests {
         // Benign vars survive untouched.
         assert_eq!(env.get("PATH"), Some(&"/usr/bin".to_string()));
         assert_eq!(env.get("HOME"), Some(&"/home/u".to_string()));
+    }
+
+    #[test]
+    fn scrub_removes_ambient_session_endpoints() {
+        let mut env: BTreeMap<String, String> = BTreeMap::from([
+            ("SSH_AUTH_SOCK".into(), "/run/user/1000/ssh-agent.sock".into()),
+            ("SSH_ASKPASS".into(), "/usr/bin/ssh-askpass".into()),
+            ("GPG_AGENT_INFO".into(), "/run/user/1000/gnupg/S.gpg-agent:1:1".into()),
+            ("DBUS_SESSION_BUS_ADDRESS".into(), "unix:path=/run/user/1000/bus".into()),
+            ("DISPLAY".into(), ":0".into()),
+            ("WAYLAND_DISPLAY".into(), "wayland-0".into()),
+            ("XAUTHORITY".into(), "/run/user/1000/xauth".into()),
+            ("XDG_RUNTIME_DIR".into(), "/run/user/1000".into()),
+            ("HOSTVAR".into(), "kept".into()),
+        ]);
+        scrub_env(&mut env);
+        for k in [
+            "SSH_AUTH_SOCK",
+            "SSH_ASKPASS",
+            "GPG_AGENT_INFO",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XAUTHORITY",
+            "XDG_RUNTIME_DIR",
+        ] {
+            assert!(!env.contains_key(k), "{k} must be scrubbed from a build/prefetch env");
+        }
+        assert_eq!(env.get("HOSTVAR"), Some(&"kept".to_string()));
     }
 
     #[test]
