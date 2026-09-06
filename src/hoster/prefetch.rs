@@ -268,12 +268,32 @@ fn run_host_step_timed(
         std::thread::sleep(Duration::from_millis(100));
     };
     if timed_out {
+        // The deadline is enforced by SIGKILL, directly (not via an external
+        // `kill` binary): first to the whole process group, then to the
+        // direct child as the edge case where the downloader lives outside
+        // the expected group. SIGKILL cannot be caught or ignored, so the
+        // reap confirm loop below exits the moment the child is gone.
         #[cfg(unix)]
         if let Some(g) = group {
-            let _ = Command::new("kill").args(["-KILL", &format!("-{g}")]).status();
+            unsafe {
+                libc::kill(g, libc::SIGKILL);
+            }
         }
-        #[cfg(not(unix))]
         let _ = child.kill();
+        // Bounded reap instead of a naked wait(): re-issue SIGKILL to the
+        // group and the child until the child is reaped or the grace cap is
+        // hit, so a wedged process can never park the deploy thread forever.
+        let grace = std::time::Instant::now() + WATCHDOG_REAP_GRACE;
+        while child.try_wait().ok().flatten().is_none() && std::time::Instant::now() < grace {
+            #[cfg(unix)]
+            if let Some(g) = group {
+                unsafe {
+                    libc::kill(g, libc::SIGKILL);
+                }
+            }
+            let _ = child.kill();
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let _ = child.wait();
     }
     let out_tail = out_thread.join().unwrap_or_default();
@@ -301,6 +321,12 @@ fn run_host_step_timed(
 /// deliberately does NOT get is an unbounded run — a stalled registry must not
 /// park the deploy thread forever.
 const PREFETCH_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+/// How long the deadline reap may keep re-issuing SIGKILL before giving up
+/// on confirming the hang is reaped. SIGKILL is deterministic; this is only a
+/// cap so a pathological D-state child can't park the deploy thread longer
+/// than the grace window.
+const WATCHDOG_REAP_GRACE: Duration = Duration::from_secs(10);
 
 /// Rows of prefetch output kept for a failure tail. Enough to show the real
 /// error from a package-manager failure, bounded so a pathological downloader
@@ -433,12 +459,17 @@ mod tests {
     /// A hung downloader must be reaped at the deadline: the host prefetch
     /// cannot park the deploy thread forever. Mirrors gitclone's watchdog —
     /// a sleeping `/bin/sh -c` is killed through its whole process group.
+    /// `exec` makes the shell become the sleeper itself (no fork to escape
+    /// into another group), so a direct SIGKILL to the child is always the
+    /// second, guaranteed reap path when the group-kill misses in some exotic
+    /// environment; without it the test would only fail after the 300s
+    /// natural exit instead of asserting the watchdog fired.
     #[test]
     fn host_prefetch_watchdog_kills_hung_step() {
         let dir = std::env::temp_dir().join(format!("gp-prefetch-hang-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let start = std::time::Instant::now();
-        let err = run_host_step_timed("sleep 300", &dir, &|_| {}, Duration::from_millis(700)).unwrap_err();
+        let err = run_host_step_timed("exec sleep 300", &dir, &|_| {}, Duration::from_millis(700)).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("timed out"), "{msg}");
         assert!(

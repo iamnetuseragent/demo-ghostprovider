@@ -28,6 +28,12 @@ pub const PIN_MARKER_FILE: &str = ".ghost-source-pin";
 /// killed mid-pack.
 const CLONE_TIMEOUT: Duration = Duration::from_secs(60 * 90);
 
+/// How long the clone timeout may keep re-issuing SIGKILL to the process
+/// group and direct child before giving up on confirming the reap. SIGKILL is
+/// deterministic; this only caps a pathological D-state child so the clone
+/// path can't park the deploy thread beyond the grace window.
+const WATCHDOG_REAP_GRACE: Duration = Duration::from_secs(10);
+
 fn git_env(askpass: Option<&Path>) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = std::env::vars().collect();
     // Stable, honest UA: identify the tool instead of spoofing a browser.
@@ -449,25 +455,50 @@ fn run_with_timeout(mut child: std::process::Child, timeout: Duration) -> std::p
         std::thread::sleep(Duration::from_millis(100));
     };
     if timed_out {
+        // The deadline is enforced by SIGKILL, directly (not via an external
+        // `kill` binary): first to the whole process group (git-remote-*
+        // helpers are in it), then to the direct child as the edge case
+        // where the process lives outside the expected group. SIGKILL cannot
+        // be caught or ignored, so the reap-confirm loop below exits as soon
+        // as the child is gone.
         #[cfg(unix)]
         if let Some(g) = group {
-            let _ = Command::new("kill")
-                .args(["-KILL", &format!("-{g}")])
-                .status();
+            unsafe {
+                libc::kill(g, libc::SIGKILL);
+            }
         }
-        #[cfg(not(unix))]
         let _ = child.kill();
-        let drained = child.wait_with_output().ok();
+        // Re-issue SIGKILL within a grace window until the child is reaped;
+        // a delayed runner must never outlive the clone deadline via a
+        // missed single-shot kill.
+        let grace = std::time::Instant::now() + WATCHDOG_REAP_GRACE;
+        while child.try_wait().ok().flatten().is_none() && std::time::Instant::now() < grace {
+            #[cfg(unix)]
+            if let Some(g) = group {
+                unsafe {
+                    libc::kill(g, libc::SIGKILL);
+                }
+            }
+            let _ = child.kill();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // The child is dead; drain whatever git managed to write so the
+        // timeout error carries the real reason (a stalled `git` normally
+        // explains itself on stderr).
+        use std::io::Read;
         let mut stderr = format!(
             "git timed out after {}s (network stalled?)",
             timeout.as_secs()
         );
-        if let Some(out) = drained {
-            if !out.stderr.is_empty() {
+        if let Some(err_tail) = child.stderr.take() {
+            let mut buf = Vec::new();
+            let _ = std::io::BufReader::new(err_tail).read_to_end(&mut buf);
+            if !buf.is_empty() {
                 stderr.push_str(": ");
-                stderr.push_str(&String::from_utf8_lossy(&out.stderr));
+                stderr.push_str(&String::from_utf8_lossy(&buf));
             }
         }
+        let _ = child.wait();
         return std::process::Output {
             status: exit_failure(),
             stdout: Vec::new(),
