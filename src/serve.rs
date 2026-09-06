@@ -30,24 +30,36 @@ fn handle(mut stream: TcpStream, root: &Path) {
     let mut buf = [0u8; 4096];
     let n = stream.read(&mut buf).unwrap_or(0);
     let req = String::from_utf8_lossy(&buf[..n]);
-    let Some(path) = req.split_whitespace().nth(1) else {
-        return respond(&mut stream, 400, "text/plain", b"bad request");
+    let mut parts = req.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let path = parts.next();
+    // Static server: GET/HEAD only. A POST/Trace/...  must not be silently
+    // downgraded to GET; respond 405 so callers cannot tunnel odd methods
+    // through the panel's own listener. HEAD returns the headers (same
+    // Content-Length) with no body.
+    let head_only = method.eq_ignore_ascii_case("HEAD");
+    if !method.eq_ignore_ascii_case("GET") && !head_only {
+        return respond(&mut stream, 405, "text/plain", b"method not allowed", false);
+    }
+    let Some(path) = path else {
+        return respond(&mut stream, 400, "text/plain", b"bad request", false);
     };
     // Strip query/fragment.
     let path = path.split(['?', '#']).next().unwrap_or("/");
     let decoded = percent_decode(path);
+    let with_body = !head_only;
 
     if !decoded.starts_with('/') {
-        return respond(&mut stream, 400, "text/plain", b"bad request");
+        return respond(&mut stream, 400, "text/plain", b"bad request", with_body);
     }
     let rel: PathBuf = decoded.trim_start_matches('/').into();
     if rel.components().any(|c| matches!(c, Component::ParentDir)) {
-        return respond(&mut stream, 403, "text/plain", b"forbidden");
+        return respond(&mut stream, 403, "text/plain", b"forbidden", with_body);
     }
     // Hidden entries (.env, .git, ...) are secrets in enough build outputs
     // that direct reads are refused too, not just hidden from the listing.
     if is_hidden(&rel) {
-        return respond(&mut stream, 403, "text/plain", b"forbidden");
+        return respond(&mut stream, 403, "text/plain", b"forbidden", with_body);
     }
 
     let full = root.join(rel);
@@ -58,20 +70,21 @@ fn handle(mut stream: TcpStream, root: &Path) {
             Ok(_) => (403, b"forbidden".as_slice()),
             Err(_) => (404, b"not found".as_slice()),
         };
-        return respond(&mut stream, status, "text/plain", body);
+        return respond(&mut stream, status, "text/plain", body, with_body);
     };
 
     if target.is_dir() {
         // index.html/index.htm are only honored when they stay inside root too.
         match find_index(&target).and_then(|i| resolve_inside(root, &i)) {
-            Some(index) => return read_and_respond(&mut stream, &index),
+            Some(index) => read_and_respond(&mut stream, &index, with_body),
             None => {
                 let listing = dir_listing(root, &target);
-                return respond(&mut stream, 200, "text/html", listing.as_bytes());
+                respond(&mut stream, 200, "text/html", listing.as_bytes(), with_body);
             }
         }
+    } else {
+        read_and_respond(&mut stream, &target, with_body);
     }
-    read_and_respond(&mut stream, &target);
 }
 
 /// True when any path element is hidden (leading dot). `.`/`..` never reach
@@ -94,13 +107,13 @@ fn resolve_inside(root: &Path, candidate: &Path) -> Option<PathBuf> {
     }
 }
 
-fn read_and_respond(stream: &mut TcpStream, target: &Path) {
+fn read_and_respond(stream: &mut TcpStream, target: &Path, with_body: bool) {
     match std::fs::read(target) {
         Ok(bytes) => {
             let mime = mime_of(target);
-            respond(stream, 200, mime, &bytes)
+            respond(stream, 200, mime, &bytes, with_body)
         }
-        Err(_) => respond(stream, 404, "text/plain", b"not found"),
+        Err(_) => respond(stream, 404, "text/plain", b"not found", with_body),
     }
 }
 
@@ -163,12 +176,13 @@ fn dir_listing(root: &Path, dir: &Path) -> String {
     )
 }
 
-fn respond(stream: &mut TcpStream, code: u16, mime: &str, body: &[u8]) {
+fn respond(stream: &mut TcpStream, code: u16, mime: &str, body: &[u8], with_body: bool) {
     let reason = match code {
         200 => "OK",
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
+        405 => "Method Not Allowed",
         _ => "Error",
     };
     let head = format!(
@@ -177,7 +191,10 @@ fn respond(stream: &mut TcpStream, code: u16, mime: &str, body: &[u8]) {
         body.len()
     );
     let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(body);
+    // HEAD still reports the real Content-Length above, but carries no body.
+    if with_body {
+        let _ = stream.write_all(body);
+    }
 }
 
 fn percent_decode(s: &str) -> String {
@@ -310,5 +327,53 @@ mod tests {
         assert!(is_hidden(std::path::Path::new("sub/.well-known/x")));
         assert!(!is_hidden(std::path::Path::new("index.html")));
         assert!(!is_hidden(std::path::Path::new("assets/app.js")));
+    }
+
+    /// Raw low-level request handling: GET serves the body with a nosniff
+    /// header, HEAD carries the same Content-Length with an empty body, and
+    /// POST/PUT/TRACE are answered 405 (never downgraded to GET). Each
+    /// request is a fresh connection — `handle` serves exactly one request
+    /// per accepted socket, like the real accept loop.
+    #[test]
+    fn raw_method_parsing_get_head_and_405() {
+        let root = tmpdir("method");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), "hello").unwrap();
+        let canon = root.canonicalize().unwrap();
+
+        fn roundtrip(canon: &std::path::Path, raw: &[u8]) -> String {
+            use std::io::{Read as _, Write as _};
+            let listener =
+                TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let mut sock = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (server, _peer) = listener.accept().unwrap();
+            let canon = canon.to_path_buf();
+            std::thread::spawn(move || handle(server, &canon));
+            let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            sock.write_all(raw).unwrap();
+            let mut resp = String::new();
+            let _ = sock.read_to_string(&mut resp);
+            resp
+        }
+
+        let resp = roundtrip(&canon, b"GET /a.txt HTTP/1.0\r\n\r\n");
+        assert!(resp.starts_with("HTTP/1.0 200 OK"), "GET resp: {resp:?}");
+        assert!(resp.contains("hello"));
+        assert!(resp.contains("nosniff"));
+
+        let resp = roundtrip(&canon, b"HEAD /a.txt HTTP/1.0\r\n\r\n");
+        assert!(resp.starts_with("HTTP/1.0 200 OK"), "HEAD resp: {resp:?}");
+        assert!(resp.contains("Content-Length: 5"));
+        assert!(!resp.contains("hello"), "HEAD must not send a body");
+
+        let resp = roundtrip(&canon, b"POST /a.txt HTTP/1.0\r\nContent-Length: 4\r\n\r\nx=1");
+        assert!(
+            resp.starts_with("HTTP/1.0 405 Method Not Allowed"),
+            "POST resp: {resp:?}"
+        );
+        let resp = roundtrip(&canon, b"TRACE / HTTP/1.0\r\n\r\n");
+        assert!(resp.starts_with("HTTP/1.0 405"), "TRACE resp: {resp:?}");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

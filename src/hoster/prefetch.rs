@@ -21,11 +21,19 @@
 //! `cdn.jsdelivr.net` is a permitted, net.log-visible endpoint) and are
 //! pinned by content SHA-256 at the recipe level. See
 //! [`seed_paraglide_plugins`].
+//!
+//! Unsafe is required for the host-prefetch watchdog: `libc::prctl` PDEATHSIG
+//! in `pre_exec` (async-signal-safe syscalls only) so a hung downloader's
+//! whole process group can be reaped at the deadline and never orphaned.
+//! Test-only env mutation is covered by the same gate.
+
+#![allow(unsafe_code)]
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::Context;
 
@@ -160,10 +168,10 @@ fn seed_pinned_plugins(
 /// runs that look interactive), and (c) the same cache redirects as the build.
 fn host_env(project_dir: &Path) -> BTreeMap<String, String> {
     let mut env: BTreeMap<String, String> = std::env::vars().collect();
-    // Same credential-denylist as the build sandbox (sandbox.rs::scrub_env).
-    for k in crate::hoster::sandbox::sandbox_scrub_denylist() {
-        env.remove(*k);
-    }
+    // Same credential + ambient-socket scrub as the build sandbox
+    // (sandbox.rs::scrub_env): a prefetch downloader must never inherit a
+    // deployment token, an SSH agent socket or a display pointer either.
+    crate::hoster::sandbox::scrub_env(&mut env);
     env.insert("CI".to_string(), "1".to_string());
     let cache = crate::hoster::sandbox::cache_env_pub(Some(project_dir));
     for (k, v) in cache {
@@ -179,18 +187,42 @@ fn host_env(project_dir: &Path) -> BTreeMap<String, String> {
 /// `--only-binary=:all:` wheels are inert archives). Project build code never
 /// executes here; it runs later, inside the offline sandbox.
 pub fn run_host_step(cmd: &str, project_dir: &Path, log: &dyn Fn(&str)) -> anyhow::Result<()> {
+    run_host_step_timed(cmd, project_dir, log, PREFETCH_TIMEOUT)
+}
+
+fn run_host_step_timed(
+    cmd: &str,
+    project_dir: &Path,
+    log: &dyn Fn(&str),
+    timeout: Duration,
+) -> anyhow::Result<()> {
     crate::hoster::validate::validate_build_cmd(cmd).map_err(|r| anyhow::anyhow!("{r}: {cmd}"))?;
     let env = host_env(project_dir);
 
     let _ = log;
-    let mut child = Command::new("/bin/sh")
+    let mut builder = Command::new("/bin/sh");
+    builder
         .args(["-c", cmd])
         .current_dir(project_dir)
         .env_clear()
         .envs(&env)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Own process group so a deadline kill takes down every child of the
+        // downloader (bun/pip/pnpm spawn helpers), and PDEATHSIG so the
+        // prefetch is never orphaned if this process dies mid-run.
+        builder.process_group(0);
+        unsafe {
+            builder.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+    }
+    let mut child = builder.spawn()?;
 
     // The prefetch downloader (pip/bun/pnpm) prints a lot of progress, e.g.
     // `pip download` emits a "Downloading …" line per dependency and `bun
@@ -203,27 +235,72 @@ pub fn run_host_step(cmd: &str, project_dir: &Path, log: &dyn Fn(&str)) -> anyho
     //     would bury the build status under hundreds of download lines. The
     //     panel is meant to show the *build*, not the dependency fetch.
     //
-    // So we drain both streams (so the pipes never fill and block the child),
-    // discarding the output on success but keeping a bounded tail that is
-    // surfaced only if the prefetch fails — that is when the lines matter.
+    // So we drain both streams via bounded-tail threads, discarding the output
+    // on success but keeping a bounded tail surfaced only if the prefetch
+    // fails — that is when the lines matter (and the child can never wedge
+    // itself on a full pipe).
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let out_thread = std::thread::spawn(move || drain_tail(stdout));
     let err_thread = std::thread::spawn(move || drain_tail(stderr));
 
-    let status = child.wait()?;
+    // Hard deadline: unlike the sandboxed steps (RuntimeMaxSec) the host
+    // prefetch used to run forever on a stalled registry. Now it is reaped by
+    // killing its process group at the deadline, exactly like the clone
+    // watchdog in gitclone.rs.
+    let pid = child.id();
+    #[cfg(unix)]
+    let group = i32::try_from(pid).ok();
+    let halt = std::time::Instant::now() + timeout;
+    let mut exit: Option<std::process::ExitStatus> = None;
+    let timed_out = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                exit = Some(status);
+                break false;
+            }
+            Ok(None) => {}
+            Err(_) => break false,
+        }
+        if std::time::Instant::now() >= halt {
+            break true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    if timed_out {
+        #[cfg(unix)]
+        if let Some(g) = group {
+            let _ = Command::new("kill").args(["-KILL", &format!("-{g}")]).status();
+        }
+        #[cfg(not(unix))]
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     let out_tail = out_thread.join().unwrap_or_default();
     let err_tail = err_thread.join().unwrap_or_default();
-    if status.success() {
-        Ok(())
-    } else {
-        let mut detail = String::new();
-        for line in err_tail.iter().chain(out_tail.iter()) {
-            detail.push_str(&format!("    {line}\n"));
-        }
-        anyhow::bail!("prefetch step failed (exit {status}): {cmd}\n{detail}");
+    if timed_out {
+        anyhow::bail!("prefetch step timed out after {}s: {cmd}", timeout.as_secs());
     }
+    let ok = exit.map(|s| s.success()).unwrap_or(false);
+    if ok {
+        return Ok(());
+    }
+    let mut detail = String::new();
+    for line in err_tail.iter().chain(out_tail.iter()) {
+        detail.push_str(&format!("    {line}\n"));
+    }
+    anyhow::bail!(
+        "prefetch step failed (exit {}): {cmd}\n{detail}",
+        exit.map(|s| s.to_string()).unwrap_or_else(|| "?".to_string())
+    );
 }
+
+/// Deadline for one host-phase prefetch step (bun/pnpm/pip downloader). The
+/// sandboxed steps budget 90 minutes in `sandbox.rs`; the host prefetch is the
+/// same class of heavy registry fetch, so it gets the same ceiling. What it
+/// deliberately does NOT get is an unbounded run — a stalled registry must not
+/// park the deploy thread forever.
+const PREFETCH_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// Rows of prefetch output kept for a failure tail. Enough to show the real
 /// error from a package-manager failure, bounded so a pathological downloader
@@ -350,6 +427,24 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let err = run_host_step("rm -rf /", &dir, &|_| {}).unwrap_err();
         assert!(err.to_string().contains("rejected"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A hung downloader must be reaped at the deadline: the host prefetch
+    /// cannot park the deploy thread forever. Mirrors gitclone's watchdog —
+    /// a sleeping `/bin/sh -c` is killed through its whole process group.
+    #[test]
+    fn host_prefetch_watchdog_kills_hung_step() {
+        let dir = std::env::temp_dir().join(format!("gp-prefetch-hang-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = std::time::Instant::now();
+        let err = run_host_step_timed("sleep 300", &dir, &|_| {}, Duration::from_millis(700)).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("timed out"), "{msg}");
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "watchdog took too long: {msg}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
