@@ -104,18 +104,19 @@ verified **before** it is executed instead of being piped to `sh` unchecked:
 ```sh
 curl -fsSL -o /tmp/dgp-install.sh https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh
 curl -fsSL -o /tmp/dgp-install.sh.minisig https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh.minisig
-minisign -Vm /tmp/dgp-install.sh -s /tmp/dgp-install.sh.minisig -P "$(sed -n 2p docs/release.pub)"
+minisign -Vm /tmp/dgp-install.sh -x /tmp/dgp-install.sh.minisig -P "$(sed -n 2p docs/release.pub)"
 sh /tmp/dgp-install.sh
 ```
 
 If the signature does not verify, do **not** run it — the script has been
-tampered with or the key has rotated. The `installation/install.sh` (source /
-full product path) is also signed the same way (`installation/install.sh.minisig`).
+tampered with or the key has rotated. `install.sh` is the project's single
+installer/uninstaller; there is no separate source installer or uninstaller
+script.
 
 ## Git tag signing (GPG)
 
-Source releases are delivered as **tags**, and the source installer
-(`installation/install.sh`) runs `git verify-tag` before building anything.
+Source releases are delivered as **tags**, and any source-invoked build must
+run `git verify-tag` before building anything.
 Tags must therefore be signed, and the signer's fingerprint must be
 publically verifiable — otherwise "verify the tag" is a ceremony over an
 unverifiable identity.
@@ -136,8 +137,7 @@ unverifiable identity.
   signs the *source* tag. They are separate identities on purpose: the binary
   key can be rotated without invalidating installed source builds.
 * **Status: pending** — the GPG fingerprint will be pasted into this section
-  when the key is provisioned; `installation/install.sh` prints a pointer to
-  this document when verification fails.
+  when the key is provisioned.
 
 ## Threat model
 

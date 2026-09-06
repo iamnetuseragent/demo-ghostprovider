@@ -6,7 +6,7 @@
 #
 #   curl -fsSL -o /tmp/dgp-install.sh https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh
 #   curl -fsSL -o /tmp/dgp-install.sh.minisig https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh.minisig
-#   minisign -Vm /tmp/dgp-install.sh -s /tmp/dgp-install.sh.minisig -P "RWSUAckJJhM011XphIH3LQE0Ebn62qqMMQej4Ong52/rGNw/rxRKniqA" && sh /tmp/dgp-install.sh
+#   minisign -Vm /tmp/dgp-install.sh -x /tmp/dgp-install.sh.minisig -P "RWSUAckJJhM011XphIH3LQE0Ebn62qqMMQej4Ong52/rGNw/rxRKniqA" && sh /tmp/dgp-install.sh
 #   sh /tmp/dgp-install.sh --uninstall
 #
 # The public key/fingerprint are published in docs/DISTRIBUTION.md; cross-check
@@ -20,6 +20,11 @@
 # release, and SHA-256 alone shares its bytes with the attacker. Install
 # minisign, or rerun with --allow-checksum-only to accept a checksum-only
 # install deliberately. Installs into ~/.local/bin.
+#
+# This is the project's single installer: `install.sh` installs or upgrades the
+# static binary, and `install.sh --uninstall` fully removes it along with the
+# demo-* systemd user units, the deploy registry/secrets state directory and
+# installed service data.
 #
 # git is a runtime requirement (cloning services); if missing it is
 # auto-installed via the distro package manager under sudo when possible.
@@ -157,12 +162,53 @@ verify_signature() {
 }
 
 if [ "$ACTION" = "uninstall" ]; then
+    # Non-interactive (piped/scripted) runs proceed without prompting.
+    confirm_uninstall() {
+        [ -t 0 ] || return 0
+        printf '%s [Y/n] ' "$1" >&2
+        a=""
+        read -r a </dev/tty || return 0
+        case "$a" in [Nn]*) return 1 ;; esac
+    }
+
+    state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/demo-ghostprovider"
+    install_dir="${XDG_DATA_HOME:-$HOME/.local/share}/demo-ghostprovider"
+    unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+
+    if command -v systemctl >/dev/null 2>&1; then
+        log "stopping and removing demo-* user units..."
+        {
+            systemctl --user list-units --all --type=service --plain --no-legend 2>/dev/null | awk '{print $1}' || true
+            systemctl --user list-unit-files --type=service --plain --no-legend 2>/dev/null | awk '{print $1}' || true
+            if [ -f "$state_dir/state.json" ]; then
+                grep -o '"unit_name"[[:space:]]*:[[:space:]]*"[^"]*"' "$state_dir/state.json" | cut -d'"' -f4 || true
+            fi
+        } | sort -u | { grep '^demo-' || true; } | while IFS= read -r unit; do
+            systemctl --user stop "$unit" 2>/dev/null || true
+            systemctl --user disable "$unit" 2>/dev/null || true
+            rm -f "$unit_dir/$unit" 2>/dev/null || true
+        done
+        systemctl --user daemon-reload 2>/dev/null || true
+        systemctl --user reset-failed 2>/dev/null || true
+    fi
+
     for f in "$BIN_DIR/$BIN_NAME"; do
         if [ -e "$f" ]; then rm -f "$f" && ok "removed $f"; fi
     done
-    log "binary removed."
-    log "installed from source earlier? full cleanup:"
-    log "  curl -sSL https://raw.githubusercontent.com/$REPO_GH/main/installation/uninstall.sh | bash"
+
+    if [ -d "$state_dir" ]; then
+        rm -rf "$state_dir" && ok "removed $state_dir (registry, net log, secrets)"
+    fi
+
+    if [ -d "$install_dir" ]; then
+        if confirm_uninstall "This also removes ALL deployed service data under $install_dir. Remove it?"; then
+            rm -rf "$install_dir" && ok "removed $install_dir (installed program + cloned services)"
+        else
+            warn "kept $install_dir — remove manually later if desired."
+        fi
+    fi
+
+    log "fully uninstalled."
     exit 0
 fi
 

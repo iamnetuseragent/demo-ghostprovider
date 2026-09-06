@@ -88,7 +88,7 @@ curl -fsSL -o /tmp/dgp-install.sh https://raw.githubusercontent.com/iamnetuserag
 curl -fsSL -o /tmp/dgp-install.sh.minisig https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh.minisig
 curl -fsSL -o /tmp/dgp-release.pub https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/docs/release.pub
 # public key fingerprint D734132609C90194 — pin it once, then reuse
-minisign -Vm /tmp/dgp-install.sh -s /tmp/dgp-install.sh.minisig -P "$(sed -n 2p /tmp/dgp-release.pub)"
+minisign -Vm /tmp/dgp-install.sh -x /tmp/dgp-install.sh.minisig -P "$(sed -n 2p /tmp/dgp-release.pub)"
 sh /tmp/dgp-install.sh          # only run if the signature verifies
 ```
 
@@ -96,16 +96,6 @@ If the signature does not verify, do **not** run it — the script has been
 tampered with or the key has rotated. `install.sh` now fails closed by default:
 a missing signature, a missing verifier, or any verification failure aborts
 the install unless you explicitly opt out with `--allow-checksum-only`.
-
-## Install (Arch Linux)
-
-Build from source with pacman managing the files:
-
-```bash
-git clone https://github.com/iamnetuseragent/demo-ghostprovider.git
-cd demo-ghostprovider
-makepkg -si
-```
 
 ## Usage
 
@@ -119,17 +109,10 @@ demo-ghostprovider --version                        # print version
 
 ## Uninstall
 
-Static-binary install (reuse the signature-verified installer from above):
+`install.sh` is the single installer and uninstaller — the same signature verifier
+from above covers `--uninstall`, which fully removes the binary, all demo-*
+systemd user units, the deploy registry/secrets state and installed service data:
 
 ```bash
 sh /tmp/dgp-install.sh --uninstall
-```
-
-Source install (`installation/install.sh`) — full cleanup, including all
-deployed service data. `uninstall.sh` is not separately signed, so review it
-before running:
-
-```bash
-curl -fsSL -o /tmp/dgp-uninstall.sh https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/installation/uninstall.sh
-bash /tmp/dgp-uninstall.sh     # review first
 ```
