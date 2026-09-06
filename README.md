@@ -43,8 +43,8 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
   - `ReadWritePaths` restricted to the project directory — caches stay inside `.ghost-cache` and are deleted with the service
   - **Offline build** — dependencies are pre-fetched before the sandboxed build (Go module zips, pip wheelhouse, bun/pnpm stores), which then runs under `PrivateNetwork=yes`; downloaded code never executes during fetching (pip `--only-binary`, bun/pnpm skip lifecycle scripts)
   - Kernel locked: `ProtectKernelTunables/Modules/ControlGroups`, `RestrictNamespaces`, `LockPersonality`, `RestrictRealtime/SUIDSGID`, empty `CapabilityBoundingSet`
-  - **Credential scrub** — builds and services never inherit `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `BUN_AUTH_TOKEN`, `DOCKER_AUTH_CONFIG`
-  - **`$HOME` redirected** in the build sandbox to `.ghost-cache/home`, so build code cannot read `~/.ssh`, `~/.netrc` or `~/.config`
+  - **Credential scrub** — builds and services never inherit `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `BUN_AUTH_TOKEN`, `DOCKER_AUTH_CONFIG`, `OPENCODE_*`/`OPENCHAMBER_*`, or ambient session endpoints (SSH agent, D-Bus, X11) — even in the host-phase dependency prefetch
+  - **`$HOME` redirected** in the build sandbox to `.ghost-cache/home`, so build code tries to read key-material the way it always does but is redirected to an empty, disposable directory in the sandbox (`~/.ssh`, `~/.netrc`, `~/.config`, gpg/SSH agent sockets) rather than the real ones — even a built-in local file read cannot reach the host's keys
   - **No silent weakening** — a missing sandbox/`netlog` prints an explicit `warn:`; a non-root panel can't silently drop to a dedicated build user
   - **Loopback where possible** — loopback-only services get a runtime egress lock; any service found binding a non-loopback port prints an explicit `warn:` instead of quietly exposing your LAN
   - **Deadline** — every build command runs under a 900s timeout, so an untrusted build can't wedge your session
@@ -79,11 +79,23 @@ This is a restricted demo version of GhostProvider that only supports deploying 
 
 ## Install
 
-One line — static binary, verified, ready to run:
+Download the installer, **verify its minisign signature before running it**
+(following a script straight from a pipe means you execute it unchecked — the
+installer is signed precisely so you never have to):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh
+curl -fsSL -o /tmp/dgp-install.sh https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh
+curl -fsSL -o /tmp/dgp-install.sh.minisig https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh.minisig
+curl -fsSL -o /tmp/dgp-release.pub https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/docs/release.pub
+# public key fingerprint D734132609C90194 — pin it once, then reuse
+minisign -Vm /tmp/dgp-install.sh -s /tmp/dgp-install.sh.minisig -P "$(sed -n 2p /tmp/dgp-release.pub)"
+sh /tmp/dgp-install.sh          # only run if the signature verifies
 ```
+
+If the signature does not verify, do **not** run it — the script has been
+tampered with or the key has rotated. `install.sh` now fails closed by default:
+a missing signature, a missing verifier, or any verification failure aborts
+the install unless you explicitly opt out with `--allow-checksum-only`.
 
 ## Install (Arch Linux)
 
@@ -107,15 +119,17 @@ demo-ghostprovider --version                        # print version
 
 ## Uninstall
 
-Static-binary install:
+Static-binary install (reuse the signature-verified installer from above):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh -s -- --uninstall
+sh /tmp/dgp-install.sh --uninstall
 ```
 
 Source install (`installation/install.sh`) — full cleanup, including all
-deployed service data:
+deployed service data. `uninstall.sh` is not separately signed, so review it
+before running:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/installation/uninstall.sh | bash
+curl -fsSL -o /tmp/dgp-uninstall.sh https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/installation/uninstall.sh
+bash /tmp/dgp-uninstall.sh     # review first
 ```

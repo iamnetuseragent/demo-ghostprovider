@@ -54,7 +54,12 @@ The paid installer must obey the same rules enforced by the demo build:
 3. **No embedded secrets.** No tokens in argv, env dumps, or logs
    (same discipline as the demo's GIT_ASKPASS handling in gitclone.rs).
 4. **User-level only.** Everything installs into the user session:
-   systemd user units, XDG paths, no sudo, ever.
+   systemd user units, XDG paths, no daemon `sudo`, ever. The only
+   privilege elevation in the whole product is `ensure_git` in the
+   one-shot installer, which may call `sudo` a single time to satisfy git
+   (a regular `pacman`/`apt` install); it is a one-time setup step, never
+   the running panel. Once installed, the daemon drops privileges
+   permanently.
 
 ## Release process (maintainer)
 
