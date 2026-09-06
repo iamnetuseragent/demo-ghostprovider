@@ -79,23 +79,21 @@ This is a restricted demo version of GhostProvider that only supports deploying 
 
 ## Install
 
-Download the installer, **verify its minisign signature before running it**
-(following a script straight from a pipe means you execute it unchecked — the
-installer is signed precisely so you never have to):
+One command:
 
 ```bash
-curl -fsSL -o /tmp/dgp-install.sh https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh
-curl -fsSL -o /tmp/dgp-install.sh.minisig https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh.minisig
-curl -fsSL -o /tmp/dgp-release.pub https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/docs/release.pub
-# public key fingerprint D734132609C90194 — pin it once, then reuse
-minisign -Vm /tmp/dgp-install.sh -x /tmp/dgp-install.sh.minisig -P "$(sed -n 2p /tmp/dgp-release.pub)"
-sh /tmp/dgp-install.sh          # only run if the signature verifies
+curl -fsSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh
 ```
 
-If the signature does not verify, do **not** run it — the script has been
-tampered with or the key has rotated. `install.sh` now fails closed by default:
-a missing signature, a missing verifier, or any verification failure aborts
-the install unless you explicitly opt out with `--allow-checksum-only`.
+`install.sh` fails closed by default: it downloads the release and its minisign
+signature, verifies the signature (with system `minisign`/`rsign`, or a pinned
+static minisign it fetches on demand from jedisct1/minisign) and only then
+installs. A missing signature, a missing verifier, or any verification failure
+aborts unless you explicitly opt out with `--allow-checksum-only`.
+
+If you want to verify the installer script itself *before* executing it, the
+installed script is also signed (`install.sh.minisig`) — see
+`docs/DISTRIBUTION.md`.
 
 ## Usage
 
@@ -114,5 +112,5 @@ from above covers `--uninstall`, which fully removes the binary, all demo-*
 systemd user units, the deploy registry/secrets state and installed service data:
 
 ```bash
-sh /tmp/dgp-install.sh --uninstall
+curl -fsSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh -s -- --uninstall
 ```

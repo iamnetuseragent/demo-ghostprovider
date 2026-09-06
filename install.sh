@@ -1,13 +1,18 @@
 #!/bin/sh
 # demo-ghostprovider one-shot installer (static binary).
 #
-# Recommended (the installer itself is minisign-verified before it runs, so
-# raw `curl | sh` of an unverified script is avoided):
+# Simplest: one command, no pre-verification ceremony:
+#
+#   curl -fsSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh -s -- --uninstall
+#
+# The script verifies the DOWNLOADED RELEASE itself (minisign, fail-closed)
+# before installing. To also verify the installer script before running it
+# (itself signed as `install.sh` + `install.sh.minisig`):
 #
 #   curl -fsSL -o /tmp/dgp-install.sh https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh
 #   curl -fsSL -o /tmp/dgp-install.sh.minisig https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh.minisig
 #   minisign -Vm /tmp/dgp-install.sh -x /tmp/dgp-install.sh.minisig -P "RWSUAckJJhM011XphIH3LQE0Ebn62qqMMQej4Ong52/rGNw/rxRKniqA" && sh /tmp/dgp-install.sh
-#   sh /tmp/dgp-install.sh --uninstall
 #
 # The public key/fingerprint are published in docs/DISTRIBUTION.md; cross-check
 # the pasted key above against that document rather than trusting this comment.
