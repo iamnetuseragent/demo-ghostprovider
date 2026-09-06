@@ -39,15 +39,16 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
 - **No root required** — services run as systemd user-level units
 - **Explicit confirmation before deploy** — always asks YES/NO first
 - **Service sandboxing:**
-  - `NoNewPrivileges=yes`; `ProtectHome=read-only`; `ProtectSystem=full` (/usr, /boot, /etc read-only)
+  - `NoNewPrivileges=yes`; `ProtectHome=read-only`; `ProtectSystem=strict` (/usr, /boot, /etc read-only)
   - `ReadWritePaths` restricted to the project directory — caches stay inside `.ghost-cache` and are deleted with the service
   - **Offline build** — dependencies are pre-fetched before the sandboxed build (Go module zips, pip wheelhouse, bun/pnpm stores), which then runs under `PrivateNetwork=yes`; downloaded code never executes during fetching (pip `--only-binary`, bun/pnpm skip lifecycle scripts)
+  - **Resource-capped build** — each build unit carries its own `MemoryHigh/MemoryMax/TasksMax/CPUQuota` alongside the runtime deadline, so a light build cannot fork/memory-storm the machine before the 90-minute cap
   - Kernel locked: `ProtectKernelTunables/Modules/ControlGroups`, `RestrictNamespaces`, `LockPersonality`, `RestrictRealtime/SUIDSGID`, empty `CapabilityBoundingSet`
   - **Credential scrub** — builds and services never inherit `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `BUN_AUTH_TOKEN`, `DOCKER_AUTH_CONFIG`, `OPENCODE_*`/`OPENCHAMBER_*`, or ambient session endpoints (SSH agent, D-Bus, X11) — even in the host-phase dependency prefetch
   - **`$HOME` redirected** in the build sandbox to `.ghost-cache/home`, so build code tries to read key-material the way it always does but is redirected to an empty, disposable directory in the sandbox (`~/.ssh`, `~/.netrc`, `~/.config`, gpg/SSH agent sockets) rather than the real ones — even a built-in local file read cannot reach the host's keys
-  - **No silent weakening** — a missing sandbox/`netlog` prints an explicit `warn:`; a non-root panel can't silently drop to a dedicated build user
+  - **Mandatory sandbox** — a build never silently degrades to a plain host process: if `systemd-run` is unavailable the deploy is *rejected*, and the only way to run unisolated is the explicit `GHOSTPROVIDER_NO_SANDBOX=1` opt-out, which prints an `INSECURE` warning and records `insecure_build: true` in the deploy registry
   - **Loopback where possible** — loopback-only services get a runtime egress lock; any service found binding a non-loopback port prints an explicit `warn:` instead of quietly exposing your LAN
-  - **Deadline** — every build command runs under a 900s timeout, so an untrusted build can't wedge your session
+  - **Deadline** — every build command runs under a 5400s timeout, so an untrusted build can't wedge your session
   - **Auditable** — `--verify-sandbox` detects sandbox escapes under strace; `--selftest` is the E2E systemd check
 - **Fixed-commit builds** — each service is pinned to an exact commit SHA, so redeploys are reproducible and a moved `main` can't silently change what you build
 - **Release supply chain** — the minisign secret key never lives on GitHub; releases are signed locally, signatures are committed, and CI refuses to publish anything unsigned

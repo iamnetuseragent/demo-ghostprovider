@@ -13,6 +13,10 @@ pub struct ServiceEntry {
     pub url: String,
     #[serde(default)]
     pub urls: Vec<String>,
+    /// True when this service's build ran without the systemd sandbox, i.e.
+    /// was deployed under the explicit `GHOSTPROVIDER_NO_SANDBOX` opt-out.
+    #[serde(default)]
+    pub insecure_build: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

@@ -16,10 +16,11 @@
 //!
 //! This is an *audit* helper (requires `strace` on the host), not part of the
 //! normal deploy path. `systemd-run` and its hardening must actually be in
-//! effect for the result to be meaningful; if `effective_mode()` is not
-//! [`crate::hoster::sandbox::EffectiveSandbox::Full`] the check reports the
-//! reduced mode explicitly and still runs, so `--verify-sandbox` can surface
-//! drift rather than silently pass.
+//! effect for the result to be meaningful; if `systemd-run` is missing the
+//! audit refuses to run (`EffectiveSandbox::FallbackPlain`), because there is
+//! no isolation left to audit. The explicit `GHOSTPROVIDER_NO_SANDBOX`
+//! opt-out (`DisabledByEnv`) still runs so the helper can show how weak the
+//! "no sandbox" mode really is.
 
 use std::path::Path;
 
@@ -61,7 +62,11 @@ pub fn run() -> anyhow::Result<()> {
             println!("WARN: sandbox disabled by GHOSTPROVIDER_NO_SANDBOX — unit will NOT be hardened. Result is not a security guarantee.");
         }
         EffectiveSandbox::FallbackPlain => {
-            println!("WARN: systemd-run not found — the probe runs without isolation. Result reflects the fallback path only.");
+            eprintln!(
+                "verify-sandbox: systemd-run not found — there is no sandbox to audit; \
+                 refusing to interpret the probe result"
+            );
+            std::process::exit(2);
         }
     }
 

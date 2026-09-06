@@ -163,6 +163,12 @@ pub enum DeployOutcome {
 pub fn run_deployment(url: &str, log: &dyn Fn(String)) -> DeployOutcome {
     // Ambient opt-outs that reduce a transparency/isolation guarantee must be
     // announced up front — never silently downgrade protection.
+    // A missing sandbox is a hard rejection, not a warning: unless the user
+    // explicitly opted out, a build must not run as a plain host process.
+    if let Some(block) = super::sandbox::sandbox_blocked_reason() {
+        log(format!("! {block}"));
+        return DeployOutcome::Rejected("sandbox-unavailable");
+    }
     if let Some(w) = super::sandbox::sandbox_warning() {
         log(format!("warn: {w}"));
     }
@@ -535,6 +541,10 @@ pub fn deploy_service(
             project_dir: project_dir.to_string_lossy().into_owned(),
             url: analysis.url.clone(),
             urls: vec![format!("http://localhost:{port}")],
+            // Reachable only via the explicit GHOSTPROVIDER_NO_SANDBOX opt-out
+            // (every other reduction is blocked earlier): record that this
+            // service's build ran unisolated so the fact survives the moment.
+            insecure_build: super::sandbox::build_was_insecure(),
         },
     )
     .context("registering state")

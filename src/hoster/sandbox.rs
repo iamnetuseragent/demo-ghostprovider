@@ -21,6 +21,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use anyhow::Context;
+
 const SANDBOX_PROPERTIES: &[&str] = &[
     "NoNewPrivileges=yes",
     // No PrivateTmp: shadows /tmp and breaks builds whose workdir is under
@@ -62,6 +64,17 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(90 * 60);
 /// egress. This is why `--verify-sandbox`'s "no outbound connect" guarantee is
 /// now structural instead of observational.
 const BUILD_NETWORK_PROPERTIES: &[&str] = &["PrivateNetwork=yes", "IPAddressDeny=any"];
+
+/// Per-build-step resource budget on the transient unit, the build-side mirror
+/// of the per-recipe runtime limits in `units.rs`. RuntimeMaxSec alone would
+/// let a fork/memory/CPU runaway run for the full 90 minutes; these caps bound
+/// the cgroup itself so exhaustion degrades the build, not the session.
+const BUILD_RESOURCE_PROPERTIES: &[&str] = &[
+    "MemoryHigh=2G",
+    "MemoryMax=4G",
+    "TasksMax=512",
+    "CPUQuota=300%",
+];
 
 /// Env vars a build step must never inherit. The sandbox already constrains
 /// filesystem reach, but env vars are how a hostile build step would
@@ -141,6 +154,37 @@ pub fn effective_mode() -> EffectiveSandbox {
     } else {
         EffectiveSandbox::FallbackPlain
     }
+}
+
+/// Security invariant for a deploy: a build must run in the hardened sandbox
+/// UNLESS the user explicitly opted out with `GHOSTPROVIDER_NO_SANDBOX=1`.
+/// Every other silent reduction — `systemd-run` missing, or a build user
+/// requested but unusable from this process — is a hard error so a deploy can
+/// never quietly degrade to a plain host process. `None` means the deploy may
+/// proceed. Callers surface this as a rejection, not a warning.
+pub fn sandbox_blocked_reason() -> Option<&'static str> {
+    if !sandbox_enabled() {
+        return None; // explicit opt-out; the INSECURE marker is written instead.
+    }
+    if !which("systemd-run") {
+        return Some(
+            "build sandbox unavailable (systemd-run not found) — refusing to build \
+             without isolation; set GHOSTPROVIDER_NO_SANDBOX=1 only if you accept \
+             running builds as plain unisolated host processes",
+        );
+    }
+    if let Some(reason) = build_user_unusable_reason() {
+        return Some(reason);
+    }
+    None
+}
+
+/// Whether the deploy just completed ran its build unisolated (only reachable
+/// via the explicit `GHOSTPROVIDER_NO_SANDBOX` opt-out, because anything else
+/// is blocked before a build starts). Recorded in `state.json` so the INSECURE
+/// condition is auditable after the fact, not only printed in the moment.
+pub fn build_was_insecure() -> bool {
+    !sandbox_enabled()
 }
 
 /// Env var naming the dedicated unprivileged build user (e.g. `ghostbuild`).
@@ -319,8 +363,9 @@ fn with_build_user_prefix(argv: &[String]) -> Vec<String> {
     }
 }
 
-/// Run `argv` inside the hardened sandbox; falls back to plain execution when
-/// systemd-run is unavailable or the user manager rejects the unit.
+/// Run `argv` inside the hardened sandbox. The sandbox is mandatory: the only
+/// permitted unisolated execution is the explicit `GHOSTPROVIDER_NO_SANDBOX`
+/// opt-out; a missing/failed `systemd-run` is a hard error, never a fallback.
 pub fn run_sandboxed(
     argv: &[String],
     cwd: &Path,
@@ -354,9 +399,20 @@ pub fn run_sandboxed(
     run_env.insert("GOTOOLCHAIN".to_string(), "auto".into());
     precreate_cache_dirs(cwd, &cache);
 
-    if !sandbox_enabled() || !which("systemd-run") {
+    // The ONLY path that may run a build as a plain host process is the
+    // explicit GHOSTPROVIDER_NO_SANDBOX opt-out. A missing systemd-run is a
+    // hard failure (see sandbox_blocked_reason): builds must not silently
+    // degrade to no isolation.
+    if !sandbox_enabled() {
         let argv = with_build_user_prefix(argv);
         return run_plain(&argv, cwd, &run_env, timeout);
+    }
+    if !which("systemd-run") {
+        anyhow::bail!(
+            "build sandbox unavailable (systemd-run not found) — refusing to build \
+             without isolation; set GHOSTPROVIDER_NO_SANDBOX=1 only if you accept \
+             running builds as plain unisolated host processes"
+        );
     }
 
     let argv = with_build_user_prefix(argv);
@@ -385,6 +441,10 @@ pub fn run_sandboxed(
     for prop in BUILD_NETWORK_PROPERTIES {
         args.push(format!("--property={prop}"));
     }
+    // Same for the per-build resource budget (see BUILD_RESOURCE_PROPERTIES).
+    for prop in BUILD_RESOURCE_PROPERTIES {
+        args.push(format!("--property={prop}"));
+    }
     args.push(format!("--property=ReadWritePaths=\"{cwd_escaped}\""));
     // Hard cap the transient unit's lifetime. `--wait` alone would block
     // forever on a hung build, and killing only systemd-run would orphan the
@@ -405,8 +465,15 @@ pub fn run_sandboxed(
         Ok((status, stdout, stderr)) => {
             let started = stderr.to_lowercase().contains("running as unit");
             if !status.map(|s| s.success()).unwrap_or(false) && !started {
-                // Unit never ran (no user manager / DBus): execute directly.
-                return run_plain(&argv, cwd, &run_env, timeout);
+                // Unit never ran (no user manager / D-Bus): this is a hard
+                // failure, not a fallback — running the build as a plain host
+                // process would silently drop the isolation.
+                anyhow::bail!(
+                    "build sandbox unavailable (systemd-run could not start the unit; \
+                     no user manager / D-Bus?) — refusing to build without isolation; \
+                     set GHOSTPROVIDER_NO_SANDBOX=1 only if you accept running builds \
+                     as plain unisolated host processes"
+                );
             }
             let stderr = strip_status_preamble(&stderr);
             let stderr = if is_timeout_result(&stderr) {
@@ -423,7 +490,11 @@ pub fn run_sandboxed(
         // An explicit timeout is a hard failure — do NOT fall back to plain
         // execution (which would only re-run the same hung build).
         Err(e) if e.is::<TimedOut>() => Err(e),
-        Err(_) => run_plain(&argv, cwd, &run_env, timeout),
+        Err(e) => Err(e).with_context(|| {
+            "build sandbox unavailable (systemd-run launch failed) — refusing to \
+             build without isolation; set GHOSTPROVIDER_NO_SANDBOX=1 only if you \
+             accept running builds as plain unisolated host processes"
+        }),
     }
 }
 
@@ -653,6 +724,21 @@ mod tests {
                 .map(String::as_str),
             Some("0")
         );
+    }
+
+    #[test]
+    fn build_resource_properties_cap_the_unit() {
+        // The whole point of BUILD_RESOURCE_PROPERTIES is that build steps are
+        // not exempt from the exhaustion hardening runtime units get. If these
+        // caps ever regress (or get dropped), a fork/memory runaway would have
+        // up to RuntimeMaxSec of the user's resources instead.
+        let names: Vec<&str> = BUILD_RESOURCE_PROPERTIES
+            .iter()
+            .map(|p| p.split('=').next().unwrap_or(""))
+            .collect();
+        for expect in ["MemoryHigh", "MemoryMax", "TasksMax", "CPUQuota"] {
+            assert!(names.contains(&expect), "{expect} must be capped on build units");
+        }
     }
 
     #[test]

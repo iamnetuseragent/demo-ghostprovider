@@ -63,7 +63,8 @@ The paid installer must obey the same rules enforced by the demo build:
 
 ## Release process (maintainer)
 
-1. Tag: `git tag -s vX.Y.Z` (or annotate + sign), push to GitHub and Codeberg.
+1. Tag: annotated `git tag -a vX.Y.Z` (the tag is tied to the cryptographically
+   signed checksums, not an ad-hoc tree), push to GitHub and Codeberg.
 2. **Build and sign locally first** — the signing key never lives on GitHub.
    `scripts/release-local.sh --sign` produces `dist/SHA256SUMS` +
    `dist/SHA256SUMS.minisig` and stages signed copies into `release/`.
@@ -112,32 +113,6 @@ If the signature does not verify, do **not** run it — the script has been
 tampered with or the key has rotated. `install.sh` is the project's single
 installer/uninstaller; there is no separate source installer or uninstaller
 script.
-
-## Git tag signing (GPG)
-
-Source releases are delivered as **tags**, and any source-invoked build must
-run `git verify-tag` before building anything.
-Tags must therefore be signed, and the signer's fingerprint must be
-publically verifiable — otherwise "verify the tag" is a ceremony over an
-unverifiable identity.
-
-* The maintainer GPG key (RSA/Ed25519, `git tag -s`) is created and its
-  fingerprint published here *before the first release tag is cut*. Until
-  then, no tag should advertise verification.
-* Users import the key out-of-band (from this doc/repo, never from a
-  transcript someone pasted) and run:
-
-  ```sh
-  gpg --keyserver keys.openpgp.org --recv-keys <FINGERPRINT>
-  git verify-tag vX.Y.Z            # after cloning
-  ```
-
-* The minisign key `RWSUAckJJhM011XphIH3LQE0Ebn62qqMMQej4Ong52/rGNw/rxRKniqA`
-  (fingerprint `D734132609C90194`) signs the *binary* checksums; the GPG key
-  signs the *source* tag. They are separate identities on purpose: the binary
-  key can be rotated without invalidating installed source builds.
-* **Status: pending** — the GPG fingerprint will be pasted into this section
-  when the key is provisioned.
 
 ## Threat model
 
