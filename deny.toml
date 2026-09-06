@@ -7,13 +7,6 @@
 [advisories]
 version = 2
 ignore = [
-    # Transitive via ureq's `json` feature -> cookie_store -> cookie -> time.
-    # RUSTSEC-2026-0009 is a stack-exhaustion DoS in the RFC 2822 *parser*
-    # (time::Date::parse & friends). Our code calls none of those functions and
-    # never feeds user input into the `time` crate (it uses only std::time and
-    # a hand-rolled civil_from_days). Upgrading time to 0.3.47 would bump MSRV
-    # beyond our pinned 1.85. Not exploitable in this binary.
-    "RUSTSEC-2026-0009",
     # Transitive proc-macro pulled by ratatui (our TUI). We never call into it;
     # it only exists to synthesize identifiers at compile time. The advisory is
     # "unmaintained" with no patched release, and there is no drop-in swap short
@@ -29,7 +22,6 @@ version = 2
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
-    "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
     "MIT",

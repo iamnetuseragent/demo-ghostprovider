@@ -17,6 +17,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(unsafe_code)] // test-only env mutation (DGP_FLAG_TEST)
     fn truthy_values_are_recognized() {
         let _l: std::sync::Mutex<()> = std::sync::Mutex::new(());
         for truthy in ["1", "true", "TRUE", "yes", "Yes", "on"] {

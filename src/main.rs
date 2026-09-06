@@ -12,6 +12,8 @@
 //!                        no outbound connects, no code-loading exec's
 //!   __serve-static DIR PORT   internal: static server used by deployed units
 
+#![deny(unsafe_code)]
+
 use anyhow::Context;
 
 use demo_ghostprovider::{netlog, selftest, serve, verify};

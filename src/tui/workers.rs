@@ -1,4 +1,11 @@
 //! Worker threads for the TUI: scan, deployment, service management.
+//!
+//! Unsafe is the cost of capturing build output without inheriting the
+//! terminal: `libc::pipe`/`dup2` create an out-of-runway stderr pipe detached
+//! from the TUI's alternate screen, and `File::from_raw_fd` adopts the read
+//! end. One buffer duration, no ownership hand-off across threads.
+
+#![allow(unsafe_code)]
 
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;

@@ -4,6 +4,12 @@
 //! temporary GIT_ASKPASS helper so the token never appears in argv
 //! (`/proc/PID/cmdline`) or shell history. The helper is 0600 in tmpfs-ish
 //! temp dir and removed afterwards.
+//!
+//! Unsafe is required for `libc::prctl(PR_SET_PDEATHSIG)` in `pre_exec`: it
+//! guarantees git-remote-* helpers die with this process instead of leaking
+//! a half-open socket. The closure runs only async-signal-safe syscalls.
+
+#![allow(unsafe_code)]
 
 use std::collections::HashMap;
 use std::path::Path;

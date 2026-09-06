@@ -603,6 +603,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)] // test-only env mutation (GITHUB_TOKEN)
     fn token_only_for_api_host() {
         unsafe { std::env::set_var("GITHUB_TOKEN", "secret") };
         assert!(github_token_for("https://api.github.com/x").is_some());

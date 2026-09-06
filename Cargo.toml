@@ -15,7 +15,7 @@ regex-lite = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-ureq = { version = "3.4.0", features = ["json"] }
+ureq = { version = "3.4.0", default-features = false, features = ["rustls", "gzip", "charset"] }
 
 [profile.release]
 lto = true
