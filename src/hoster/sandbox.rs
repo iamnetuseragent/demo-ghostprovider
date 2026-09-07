@@ -35,6 +35,7 @@ const SANDBOX_PROPERTIES: &[&str] = &[
     "ProtectHostname=yes",
     "ProtectKernelLogs=yes",
     "ProtectProc=invisible",
+    "ProcSubset=pid",
     "ProtectControlGroups=yes",
     "ProtectKernelTunables=yes",
     "ProtectKernelModules=yes",
@@ -795,6 +796,22 @@ mod tests {
             assert!(line.contains(group), "missing {group} in {line}");
         }
         assert!(!line.contains("@debug"), "@debug would break --verify-sandbox strace");
+    }
+
+    #[test]
+    fn build_unit_has_device_proc_and_family_locks() {
+        // The build sandbox must not see the real device tree, expose the
+        // full /proc, or open exotic address families. Parity with service
+        // units; stray copies of these directives would silently weaken it.
+        let joined = SANDBOX_PROPERTIES.join("\n");
+        for expect in [
+            "PrivateDevices=yes",
+            "ProcSubset=pid",
+            "ProtectProc=invisible",
+            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+        ] {
+            assert!(joined.contains(expect), "missing {expect} in build unit");
+        }
     }
 
     #[test]

@@ -275,7 +275,7 @@ fn render_unit(spec: &UnitSpec) -> anyhow::Result<String> {
          ProtectKernelTunables=yes\nProtectKernelModules=yes\nProtectControlGroups=yes\n\
          ProtectClock=yes\nProtectHostname=yes\nProtectKernelLogs=yes\nPrivateIPC=yes\n\
          RestrictNamespaces=yes\nLockPersonality=yes\nRestrictRealtime=yes\n\
-RestrictSUIDSGID=yes\nProtectProc=invisible\nCapabilityBoundingSet=\nUMask=0077\n\
+RestrictSUIDSGID=yes\nProtectProc=invisible\nPrivateDevices=yes\nProcSubset=pid\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\nCapabilityBoundingSet=\nUMask=0077\n\
           SystemCallFilter=~@mount @swap @reboot @cpu-emulation @obsolete @module @raw-io @clock\n\
           {res_lines}{ip_allow}[Install]\nWantedBy=default.target\n",
         desc = escape_unit_value(if spec.description.is_empty() {
@@ -429,6 +429,9 @@ mod tests {
             "InaccessiblePaths=/home/user/.ssh",
             "/home/user/.config",
             ".local/state/demo-ghostprovider",
+            "PrivateDevices=yes\n",
+            "ProcSubset=pid\n",
+            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n",
             "SystemCallFilter=~@mount @swap @reboot @cpu-emulation @obsolete @module @raw-io @clock\n",
         ] {
             assert!(content.contains(needle), "missing {needle:?}");
