@@ -126,6 +126,13 @@ fn build_agent_named_encoding(
         // re-checked on every hop. Turning automatic chasing off is what
         // makes that possible.
         .max_redirects(0)
+        // Honour ambient HTTP(S)_PROXY / ALL_PROXY / NO_PROXY so a user behind
+        // a corporate proxy or local TUN/VPN breakout can reach the allowlisted
+        // hosts (ureq's own defaults read these, but `Agent::config_builder()`
+        // does not - without this an HTTPS proxy would be silently bypassed).
+        // The proxy only changes the transport connection; the request still
+        // targets the allowlisted host and is re-checked on every hop.
+        .proxy(ureq::Proxy::try_from_env())
         .user_agent(format!("demo-ghostprovider/{}", env!("CARGO_PKG_VERSION")));
     if let Some(t) = recv_body {
         b = b.timeout_recv_body(Some(t));
@@ -536,6 +543,73 @@ mod tests {
         assert!(ensure_allowed("https://raw.githubusercontent.com/a/b/main/f").is_ok());
         // codeload is the archive-redirect target the tarball fallback needs.
         assert!(ensure_allowed("https://codeload.github.com/a/b/tar.gz/master").is_ok());
+    }
+
+    #[test]
+    #[allow(unsafe_code)] // test-only env mutation (HTTPS_PROXY)
+    fn honours_ambient_https_proxy() {
+        // Regression guard for VPN/proxy users: `Agent::config_builder()` in
+        // ureq does NOT read the environment, but our transport must route
+        // through the ambient HTTPS proxy. We point the proxy at a real
+        // loopback CONNECT sink and assert the connection actually lands on
+        // it (proving the proxy is used) rather than going to the real host.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let proxy_url = format!("http://{addr}");
+        // Clone the listener into the sink thread so the original can be
+        // dropped deterministically after the request; a clone shares the same
+        // socket, and `sock` is bound by the time we drop the clone.
+        let sink_listener = listener.try_clone().unwrap();
+        let sink = std::thread::spawn(move || {
+            use std::io::Read;
+            let (mut sock, _) = sink_listener
+                .accept()
+                .expect("proxy must receive the connect");
+            let mut buf = vec![0u8; 512];
+            let mut n = 0;
+            // ureq sends the whole CONNECT line in a single write; one read
+            // is enough to capture it, but loop to be robust to short reads.
+            while n < buf.len() {
+                match sock.read(&mut buf[n..]) {
+                    Ok(0) | Err(_) => break,
+                    Ok(m) => n += m,
+                }
+            }
+            buf.truncate(n);
+            buf
+        });
+
+        // SAFETY: single-threaded test, no other lib test touches these vars.
+        unsafe {
+            std::env::set_var("HTTPS_PROXY", &proxy_url);
+            std::env::set_var("https_proxy", "");
+            std::env::set_var("ALL_PROXY", "");
+            // Do NOT set NO_PROXY for api.github.com, so the CONNECT is proxied.
+            std::env::set_var("NO_PROXY", "");
+            std::env::set_var("no_proxy", "");
+        }
+
+        let agent = build_agent(Duration::from_secs(5), None);
+        // Target an allowlisted https host. With a silent proxy sink no reply
+        // arrives, but the connection must reach the sink as a CONNECT tunnel
+        // to api.github.com:443 (instead of going straight to the real host).
+        let _ = agent.head("https://api.github.com/").call();
+
+        drop(listener);
+        let handshake = sink.join().unwrap();
+        let text = String::from_utf8_lossy(&handshake);
+        assert!(
+            text.contains("CONNECT api.github.com:443"),
+            "expected CONNECT to api.github.com:443 via proxy, got {text:?}"
+        );
+
+        unsafe {
+            std::env::remove_var("HTTPS_PROXY");
+            std::env::remove_var("https_proxy");
+            std::env::remove_var("ALL_PROXY");
+            std::env::remove_var("NO_PROXY");
+            std::env::remove_var("no_proxy");
+        }
     }
 
     #[test]
