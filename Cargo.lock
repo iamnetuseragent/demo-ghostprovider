@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "demo-ghostprovider"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "anyhow",
  "crossterm",

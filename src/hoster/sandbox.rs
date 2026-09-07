@@ -40,6 +40,13 @@ const SANDBOX_PROPERTIES: &[&str] = &[
     "ProtectKernelModules=yes",
     "RestrictNamespaces=yes",
     "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+    // Seccomp deny-list (defence-in-depth on top of the empty capability
+    // bounding set): kernel-touching, boot/reboot, swap, raw-io and obsolete
+    // syscalls can never reach the kernel. Deliberately NOT `@debug` — the
+    // `--verify-sandbox` probe runs strace inside the unit and needs ptrace.
+    // A allowlist would be stricter but would break exotic build tools; the
+    // live-deploy matrix in the release notes covers bun/go/pip/sh.
+    "SystemCallFilter=~@mount @swap @reboot @cpu-emulation @obsolete @module @raw-io @clock",
     "LockPersonality=yes",
     "RestrictRealtime=yes",
     "RestrictSUIDSGID=yes",
@@ -769,6 +776,25 @@ mod tests {
         for expect in ["MemoryHigh", "MemoryMax", "TasksMax", "CPUQuota"] {
             assert!(names.contains(&expect), "{expect} must be capped on build units");
         }
+    }
+
+    #[test]
+    fn build_unit_has_syscall_filter() {
+        // Seccomp is a build-sandbox invariant (v0.0.25 hardening). Deny the
+        // kernel-touching groups but NEVER @debug: `--verify-sandbox` runs
+        // strace inside the unit and needs ptrace.
+        let scf: Vec<&str> = SANDBOX_PROPERTIES
+            .iter()
+            .filter(|p| p.starts_with("SystemCallFilter="))
+            .copied()
+            .collect();
+        assert_eq!(scf.len(), 1, "exactly one SystemCallFilter expected");
+        let line = scf[0];
+        assert!(line.starts_with("SystemCallFilter=~"), "must be a deny-list");
+        for group in ["@mount", "@swap", "@reboot", "@clock", "@raw-io"] {
+            assert!(line.contains(group), "missing {group} in {line}");
+        }
+        assert!(!line.contains("@debug"), "@debug would break --verify-sandbox strace");
     }
 
     #[test]

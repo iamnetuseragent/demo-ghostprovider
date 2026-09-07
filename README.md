@@ -40,9 +40,11 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
 - **Explicit confirmation before deploy** — always asks YES/NO first
 - **Service sandboxing:**
   - `NoNewPrivileges=yes`; `ProtectHome=read-only`; `ProtectSystem=strict` (/usr, /boot, /etc read-only)
+  - **Privacy blanking** — `InaccessiblePaths` hides the invoker's secret roots (`~/.ssh`, `~/.config`, `~/.gnupg`, `~/.netrc`, `~/.aws`, `~/.cache`, `~/.local/state/demo-ghostprovider`, whatever exists on your machine) so a compromised service cannot read keys or tokens; `$HOME` and `XDG_*` are redirected into the project's `.ghost-cache`
   - `ReadWritePaths` restricted to the project directory — caches stay inside `.ghost-cache` and are deleted with the service
+  - **Seccomp deny-list** — `SystemCallFilter` denies `@mount @swap @reboot @cpu-emulation @obsolete @module @raw-io @clock` on both build units and services
   - **Offline build** — dependencies are pre-fetched before the sandboxed build (Go module zips, pip wheelhouse, bun/pnpm stores), which then runs under `PrivateNetwork=yes`; downloaded code never executes during fetching (pip `--only-binary`, bun/pnpm skip lifecycle scripts)
-  - **Resource-capped build** — each build unit carries its own `MemoryHigh/MemoryMax/TasksMax/CPUQuota` alongside the runtime deadline, so a light build cannot fork/memory-storm the machine before the 90-minute cap
+  - **Resource caps** — build units and services each carry `MemoryHigh/MemoryMax/TasksMax/CPUQuota` alongside the runtime deadline, so no unit can fork/memory-storm the machine before its cap
   - Kernel locked: `ProtectKernelTunables/Modules/ControlGroups`, `RestrictNamespaces`, `LockPersonality`, `RestrictRealtime/SUIDSGID`, empty `CapabilityBoundingSet`
   - **Credential scrub** — builds and services never inherit `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `BUN_AUTH_TOKEN`, `DOCKER_AUTH_CONFIG`, `OPENCODE_*`/`OPENCHAMBER_*`, or ambient session endpoints (SSH agent, D-Bus, X11) — even in the host-phase dependency prefetch
   - **`$HOME` redirected** in the build sandbox to `.ghost-cache/home`, so build code tries to read key-material the way it always does but is redirected to an empty, disposable directory in the sandbox (`~/.ssh`, `~/.netrc`, `~/.config`, gpg/SSH agent sockets) rather than the real ones — even a built-in local file read cannot reach the host's keys

@@ -94,6 +94,10 @@ pub struct ResourceLimits {
     pub memory_max: Option<&'static str>,
     /// `TasksMax=` — process/thread count cap for the unit's cgroup.
     pub tasks_max: Option<&'static str>,
+    /// `CPUQuota=` — CPU-time cap for the unit's cgroup (e.g. `"100%"` for one
+    /// core). A runaway service must not pin every core of the session; the
+    /// build units already cap CPU via `BUILD_RESOURCE_PROPERTIES`.
+    pub cpu_quota: Option<&'static str>,
     /// `LimitNOFILE=` — file-descriptor cap (applied to soft and hard).
     pub limit_nofile: Option<u32>,
     /// `OOMScoreAdjust=` — OOM-killer bias vs sibling units.
@@ -106,6 +110,7 @@ impl ResourceLimits {
             memory_high: None,
             memory_max: None,
             tasks_max: None,
+            cpu_quota: None,
             limit_nofile: None,
             oom_score_adjust: None,
         }
@@ -115,8 +120,10 @@ impl ResourceLimits {
 /// Write the hardened user unit for `service_name` and daemon-reload.
 ///
 /// Hardening set mirrors the Python version: no new privileges, read-only
-/// home, strict-ish filesystem protection with a writable working dir,
-/// kernel/control-group locks, empty capability bounding set.
+/// home + inaccessible invoker secret roots, strict-ish filesystem
+/// protection with a writable working dir, kernel/control-group locks,
+/// seccomp deny-list, empty capability bounding set, per-recipe
+/// CPU/memory/tasks caps, loopback-only when applicable.
 pub struct UnitSpec<'a> {
     pub service_name: &'a str,
     pub working_dir: &'a Path,
@@ -139,6 +146,14 @@ pub fn create_unit(spec: &UnitSpec) -> anyhow::Result<()> {
 
     let content = render_unit(spec)?;
 
+    // Pre-create the project-scoped cache/home/runtime dirs the unit's env
+    // redirects to, so a service always sees writable HOME/XDG_* locations
+    // that survive restarts.
+    let cache_root = spec.working_dir.join(".ghost-cache");
+    for sub in ["", "home", "runtime"] {
+        let _ = std::fs::create_dir_all(cache_root.join(sub));
+    }
+
     // Atomic write: a unit is replaced whole (systemd never reads a half of
     // it) and the destination name is never followed as a symlink.
     let unit_path = unit_dir.join(format!("{service_name}.service"));
@@ -149,6 +164,33 @@ pub fn create_unit(spec: &UnitSpec) -> anyhow::Result<()> {
     let _ = systemctl(&["daemon-reload"]);
     let _ = systemctl(&["enable", &service_name]);
     Ok(())
+}
+
+/// Invoker-home subpaths a compromised service must never be able to read:
+/// ssh keys, token stores, and the panel's own state/config. These never
+/// overlap a per-service working dir, so blanking them is safe; we keep
+/// `ProtectHome=read-only` instead of `ProtectHome=tmpfs` because the units
+/// execute binaries that live under $HOME (panel, built artifacts) and a
+/// tmpfs home would hide those too.
+fn inaccessible_paths() -> String {
+    let home = crate::paths::home();
+    [
+        ".ssh",
+        ".config",
+        ".gnupg",
+        ".netrc",
+        ".aws",
+        ".cache",
+        ".local/state/demo-ghostprovider",
+    ]
+    .into_iter()
+    .map(|p| home.join(p))
+    // systemd refuses to set up the namespace if a listed path does not
+    // exist, so only the roots actually present are blanked.
+    .filter(|p| p.exists())
+    .map(|p| escape_unit_value(&p.to_string_lossy()))
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 fn render_unit(spec: &UnitSpec) -> anyhow::Result<String> {
@@ -179,6 +221,7 @@ fn render_unit(spec: &UnitSpec) -> anyhow::Result<String> {
     if limits.memory_high.is_some()
         || limits.memory_max.is_some()
         || limits.tasks_max.is_some()
+        || limits.cpu_quota.is_some()
         || limits.limit_nofile.is_some()
         || limits.oom_score_adjust.is_some()
     {
@@ -193,6 +236,9 @@ fn render_unit(spec: &UnitSpec) -> anyhow::Result<String> {
     if let Some(t) = limits.tasks_max {
         res_lines.push_str(&format!("TasksMax={t}\n"));
     }
+    if let Some(c) = limits.cpu_quota {
+        res_lines.push_str(&format!("CPUQuota={c}\n"));
+    }
     if let Some(n) = limits.limit_nofile {
         res_lines.push_str(&format!("LimitNOFILE={n}\n"));
     }
@@ -206,6 +252,7 @@ fn render_unit(spec: &UnitSpec) -> anyhow::Result<String> {
     // against systemd 261 via `systemd-analyze verify`); WorkingDirectory is
     // a single value and stays unquoted.
     let working = escape_unit_value(&spec.working_dir.to_string_lossy());
+    let inaccessible = inaccessible_paths();
     let ip_allow = if spec.loopback_only {
         "IPAddressAllow=127.0.0.1 ::1\n"
     } else {
@@ -223,12 +270,14 @@ fn render_unit(spec: &UnitSpec) -> anyhow::Result<String> {
          UnsetEnvironment=GITHUB_TOKEN GH_TOKEN NPM_TOKEN NODE_AUTH_TOKEN DOCKER_AUTH_CONFIG BUN_AUTH_TOKEN OPENCHAMBER_AGENT_TOOL_TOKEN OPENCHAMBER_TOKEN OPENCHAMBER_SESSION_ID OPENCODE_SERVER_PASSWORD OPENCODE_TOKEN OPENCODE_AUTH_TOKEN SSH_AUTH_SOCK SSH_ASKPASS GPG_AGENT_INFO DBUS_SESSION_BUS_ADDRESS DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_RUNTIME_DIR\n\
          # -- Privacy & Security Hardening --\n\
          NoNewPrivileges=yes\nProtectHome=read-only\nProtectSystem=full\n\
-         ReadWritePaths=\"{working}\"\nEnvironment=\"XDG_CACHE_HOME={working}/.ghost-cache\"\nEnvironment=\"XDG_RUNTIME_DIR={working}/.ghost-cache/runtime\"\n\
+         ReadWritePaths=\"{working}\"\nEnvironment=\"HOME={working}/.ghost-cache/home\"\nEnvironment=\"XDG_CACHE_HOME={working}/.ghost-cache\"\nEnvironment=\"XDG_RUNTIME_DIR={working}/.ghost-cache/runtime\"\n\
+         InaccessiblePaths={inaccessible}\n\
          ProtectKernelTunables=yes\nProtectKernelModules=yes\nProtectControlGroups=yes\n\
          ProtectClock=yes\nProtectHostname=yes\nProtectKernelLogs=yes\nPrivateIPC=yes\n\
          RestrictNamespaces=yes\nLockPersonality=yes\nRestrictRealtime=yes\n\
-         RestrictSUIDSGID=yes\nProtectProc=invisible\nCapabilityBoundingSet=\nUMask=0077\n\
-         {res_lines}{ip_allow}[Install]\nWantedBy=default.target\n",
+RestrictSUIDSGID=yes\nProtectProc=invisible\nCapabilityBoundingSet=\nUMask=0077\n\
+          SystemCallFilter=~@mount @swap @reboot @cpu-emulation @obsolete @module @raw-io @clock\n\
+          {res_lines}{ip_allow}[Install]\nWantedBy=default.target\n",
         desc = escape_unit_value(if spec.description.is_empty() {
             &service_name
         } else {
@@ -356,6 +405,7 @@ mod tests {
                 memory_high: Some("256M"),
                 memory_max: Some("384M"),
                 tasks_max: Some("300"),
+                cpu_quota: Some("100%"),
                 limit_nofile: Some(4096),
                 oom_score_adjust: Some(-100),
             },
@@ -366,11 +416,24 @@ mod tests {
             "MemoryHigh=256M\n",
             "MemoryMax=384M\n",
             "TasksMax=300\n",
+            "CPUQuota=100%\n",
             "LimitNOFILE=4096\n",
             "OOMScoreAdjust=-100\n",
+            // Hardening regression guards: HOME redirect + InaccessiblePaths
+            // on the user's secret roots (tmpfs was rejected: unit binaries
+            // live under $HOME, so a tmpfs home would hide them too), and the
+            // seccomp deny-list. If these regress, a compromised service could
+            // read the invoking user's ~/.ssh/tokens again.
+            "ProtectHome=read-only\n",
+            "Environment=\"HOME=/tmp/vert/.ghost-cache/home\"\n",
+            "InaccessiblePaths=/home/user/.ssh",
+            "/home/user/.config",
+            ".local/state/demo-ghostprovider",
+            "SystemCallFilter=~@mount @swap @reboot @cpu-emulation @obsolete @module @raw-io @clock\n",
         ] {
             assert!(content.contains(needle), "missing {needle:?}");
         }
+        assert!(!content.contains("ProtectHome=tmpfs"));
 
         let bare = UnitSpec {
             res: ResourceLimits::none(),
@@ -380,6 +443,7 @@ mod tests {
         assert!(!content.contains("MemoryHigh="));
         assert!(!content.contains("MemoryMax="));
         assert!(!content.contains("TasksMax="));
+        assert!(!content.contains("CPUQuota="));
         assert!(!content.contains("OOMScoreAdjust="));
     }
 }
