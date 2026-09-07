@@ -354,6 +354,24 @@ fn precreate_cache_dirs(project_dir: &Path, env: &BTreeMap<&'static str, String>
     }
 }
 
+/// Environment used to *launch* `systemd-run` — our own trusted binary, never
+/// the untrusted build. The unit env (`run_env`) deliberately strips the user
+/// session pointers, but `systemd-run --user` itself must reach the user
+/// manager bus to create the transient unit: without a bus address it exits
+/// before "Running as unit" and the build is refused. Restore the two
+/// bus-locator vars from the ambient process env for the launcher only. They
+/// never leak into the unit, whose environment comes exclusively from the
+/// `--setenv` loop in `run_sandboxed`.
+fn launcher_env(run_env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut env = run_env.clone();
+    for key in ["DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"] {
+        if let Some(value) = std::env::var_os(key) {
+            env.insert(key.to_string(), value.to_string_lossy().into_owned());
+        }
+    }
+    env
+}
+
 /// Prefix `argv` with `setpriv --reuid=... --regid=... --init-groups` when a
 /// dedicated build user is configured and usable; otherwise return it as-is.
 fn with_build_user_prefix(argv: &[String]) -> Vec<String> {
@@ -461,18 +479,30 @@ pub fn run_sandboxed(
     // Grace so systemd-run can observe the RuntimeMaxSec kill and exit on its
     // own; only when it is still wedged do we kill it directly.
     let grace = timeout + Duration::from_secs(30);
-    match run_cmd_timed(&sysrun, cwd, &run_env, grace) {
+    match run_cmd_timed(&sysrun, cwd, &launcher_env(&run_env), grace) {
         Ok((status, stdout, stderr)) => {
             let started = stderr.to_lowercase().contains("running as unit");
             if !status.map(|s| s.success()).unwrap_or(false) && !started {
                 // Unit never ran (no user manager / D-Bus): this is a hard
                 // failure, not a fallback — running the build as a plain host
-                // process would silently drop the isolation.
+                // process would silently drop the isolation. Surface
+                // systemd-run's own diagnostics so the refusing subsystem is
+                // identifiable.
+                let tail = stderr
+                    .trim_end()
+                    .lines()
+                    .rev()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 anyhow::bail!(
                     "build sandbox unavailable (systemd-run could not start the unit; \
                      no user manager / D-Bus?) — refusing to build without isolation; \
                      set GHOSTPROVIDER_NO_SANDBOX=1 only if you accept running builds \
-                     as plain unisolated host processes"
+                     as plain unisolated host processes\nsystemd-run: {tail}"
                 );
             }
             let stderr = strip_status_preamble(&stderr);
@@ -756,5 +786,45 @@ mod tests {
         unsafe {
             std::env::remove_var(BUILD_USER_ENV);
         }
+    }
+
+    #[test]
+    fn launcher_env_restores_bus_pointers_but_unit_env_stays_isolated() {
+        let proj = Path::new("/proj");
+        let unit_env: BTreeMap<String, String> = cache_env(Some(proj))
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        // The unit env deliberately has no bus address and redirects the
+        // runtime dir under the project.
+        assert!(!unit_env.contains_key("DBUS_SESSION_BUS_ADDRESS"));
+        assert!(matches!(
+            unit_env.get("XDG_RUNTIME_DIR").map(String::as_str),
+            Some(v) if v.starts_with("/proj/.ghost-cache/")
+        ));
+        // Non-bus redirects survive into the launcher unchanged.
+        let launch = launcher_env(&unit_env);
+        assert_eq!(
+            launch.get("CARGO_HOME").map(String::as_str),
+            unit_env.get("CARGO_HOME").map(String::as_str)
+        );
+        // Bus locators are restored from the ambient process env for the
+        // launcher only, when the ambient process has them.
+        if let Ok(xrd) = std::env::var("XDG_RUNTIME_DIR") {
+            assert_eq!(launch.get("XDG_RUNTIME_DIR").map(String::as_str), Some(xrd.as_str()));
+            assert!(!launch
+                .get("XDG_RUNTIME_DIR")
+                .map(String::as_str)
+                .unwrap_or("")
+                .starts_with("/proj/"));
+        }
+        if let Ok(db) = std::env::var("DBUS_SESSION_BUS_ADDRESS") {
+            assert_eq!(
+                launch.get("DBUS_SESSION_BUS_ADDRESS").map(String::as_str),
+                Some(db.as_str())
+            );
+        }
+        // Constructing the launcher env must not mutate the unit env.
+        assert!(!unit_env.contains_key("DBUS_SESSION_BUS_ADDRESS"));
     }
 }
