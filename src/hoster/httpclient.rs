@@ -109,31 +109,41 @@ fn build_agent(global: Duration, recv_body: Option<Duration>) -> ureq::Agent {
     build_agent_named_encoding(global, recv_body, None)
 }
 
-/// Variant that lets the caller stop advertising gzip. Needed for byte-range
-/// requests: a compressed slice cannot be inflated, and ureq would try (and
-/// fail with "unexpected end of file") whenever the server gzips the body.
-fn build_agent_identity(global: Duration, recv_body: Option<Duration>) -> ureq::Agent {
-    build_agent_named_encoding(global, recv_body, Some(ureq::config::AutoHeaderValue::None))
-}
-
 fn build_agent_named_encoding(
     global: Duration,
     recv_body: Option<Duration>,
     accept_encoding: Option<ureq::config::AutoHeaderValue>,
+) -> ureq::Agent {
+    agent_with_proxy(global, recv_body, accept_encoding, true)
+}
+
+/// Shared agent builder. With `use_ambient_proxy`, honours
+/// HTTP(S)_PROXY / ALL_PROXY / NO_PROXY so a user behind a corporate proxy or
+/// local TUN/VPN breakout can reach the allowlisted hosts. (ureq already picks
+/// these up via [`Config::default`], the explicit `.proxy(...)` merely pinches
+/// the intent; without it the choice rides on a ureq default.) The proxy only
+/// changes the transport connection; the request still targets the allowlisted
+/// host and is re-checked on every hop. The `false` variant is the fallback
+/// transport for the case where a configured proxy/VPN goes away mid-deploy:
+/// it forces `proxy(None)` because ureq's default would otherwise keep routing
+/// through the env proxy that just died.
+fn agent_with_proxy(
+    global: Duration,
+    recv_body: Option<Duration>,
+    accept_encoding: Option<ureq::config::AutoHeaderValue>,
+    use_ambient_proxy: bool,
 ) -> ureq::Agent {
     let mut b = ureq::Agent::config_builder()
         // Redirects are followed by hand below so the allowlist can be
         // re-checked on every hop. Turning automatic chasing off is what
         // makes that possible.
         .max_redirects(0)
-        // Honour ambient HTTP(S)_PROXY / ALL_PROXY / NO_PROXY so a user behind
-        // a corporate proxy or local TUN/VPN breakout can reach the allowlisted
-        // hosts (ureq's own defaults read these, but `Agent::config_builder()`
-        // does not - without this an HTTPS proxy would be silently bypassed).
-        // The proxy only changes the transport connection; the request still
-        // targets the allowlisted host and is re-checked on every hop.
-        .proxy(ureq::Proxy::try_from_env())
-        .user_agent(format!("demo-ghostprovider/{}", env!("CARGO_PKG_VERSION")));
+        .proxy(if use_ambient_proxy {
+            ureq::Proxy::try_from_env()
+        } else {
+            None
+        });
+    b = b.user_agent(format!("demo-ghostprovider/{}", env!("CARGO_PKG_VERSION")));
     if let Some(t) = recv_body {
         b = b.timeout_recv_body(Some(t));
     }
@@ -141,6 +151,21 @@ fn build_agent_named_encoding(
         b = b.accept_encoding(enc);
     }
     b.timeout_global(Some(global)).build().into()
+}
+
+/// The proxy from the environment that would actually be used for `url`, or
+/// `None` when nothing is configured or the target is exempted via NO_PROXY.
+/// Used to decide whether a direct-connection fallback is worth trying: if a
+/// proxy is configured and the proxy/VPN is switched off mid-deploy, the
+/// direct route may be the healthy one.
+fn ambient_proxy_for(url: &str) -> Option<ureq::Proxy> {
+    let proxy = ureq::Proxy::try_from_env()?;
+    let uri: ureq::http::Uri = url.parse().ok()?;
+    if proxy.is_no_proxy(&uri) {
+        None
+    } else {
+        Some(proxy)
+    }
 }
 
 /// Resolve a `Location` header against the current hop URL.
@@ -272,7 +297,12 @@ fn record_failure(url: &str, err: &ureq::Error) {
 /// standard range-response header. Traverses the same [`attempt_range`]
 /// path, so every hop is allowlist-gated and net.log-recorded.
 pub fn remote_len(url: &str) -> anyhow::Result<u64> {
-    let agent = build_agent_identity(Duration::from_secs(30), Some(Duration::from_secs(60)));
+    let agent = agent_with_proxy(
+        Duration::from_secs(30),
+        Some(Duration::from_secs(60)),
+        Some(ureq::config::AutoHeaderValue::None),
+        true,
+    );
     let res = attempt_range(&agent, url, (0, 0)).map_err(|e| anyhow::anyhow!("{e}"))?;
     let status = res.status().as_u16();
     if status >= 400 {
@@ -305,81 +335,92 @@ pub fn remote_len(url: &str) -> anyhow::Result<u64> {
     anyhow::bail!("no usable size header in probe response for {url}")
 }
 
-/// GET a URL and return the response body as text with retry/curl-fallback
-/// semantics of the Python version reduced to: 1 retry after backoff on
-/// connection errors. Status >= 400 is returned as an error carrying the code.
-pub fn get_text(url: &str) -> anyhow::Result<String> {
+/// Shared retry core for every GET-family fetch.
+///
+/// Transports are tried in preference order per attempt: the ambient proxy
+/// first (the user's explicit intent), then a direct connection when a proxy
+/// applies to this URL. A proxy/VPN that is switched off mid-deploy leaves an
+/// agent still armed with `HTTPS_PROXY` pointing at a now-dead socket; the
+/// direct fallback absorbs exactly that: the request is retried without the
+/// proxy before the fetch is declared failed. The allowlist gates the target
+/// on every hop either way — neither transport opens a socket to a host
+/// outside [`ALLOWED_ENDPOINTS`]. Short backoff between attempts ramps so a
+/// brief VPN reconnect (seconds) is absorbed instead of failing the whole
+/// deploy. HTTP error statuses (>=400) are terminal and returned wrapped.
+fn fetch(
+    url: &str,
+    global: Duration,
+    recv_body: Option<Duration>,
+    identity_encoding: bool,
+    ranged: Option<(u64, u64)>,
+) -> Result<Response<ureq::Body>, anyhow::Error> {
     ensure_allowed(url)?;
-    let agent = build_agent(TIMEOUT, None);
+    let accept_encoding = identity_encoding.then_some(ureq::config::AutoHeaderValue::None);
+    let proxied = agent_with_proxy(global, recv_body, accept_encoding.clone(), true);
+    let direct = ambient_proxy_for(url).map(|_| {
+        agent_with_proxy(global, recv_body, accept_encoding, false)
+    });
     let mut last_err: Option<anyhow::Error> = None;
 
     for attempt_no in 0..=RETRIES {
-        let res = attempt(&agent, url);
-
-        match res {
-            Ok(r) => {
-                let status = r.status();
-                let body = r.into_body().read_to_string().context("reading body")?;
-                if status.as_u16() == 403 && attempt_no < RETRIES {
-                    std::thread::sleep(Duration::from_secs(2 * (attempt_no as u64 + 1)));
-                    continue;
+        for agent in std::iter::once(&proxied).chain(direct.iter()) {
+            let res = match ranged {
+                Some((start, end)) => attempt_range(agent, url, (start, end)),
+                None => attempt(agent, url),
+            };
+            match res {
+                Ok(r) => {
+                    // 403 is retried (rate limiting / DDoS shield) with a
+                    // growing pause; the response body is drained so the
+                    // pooled connection is released cleanly.
+                    if r.status().as_u16() == 403 && attempt_no < RETRIES {
+                        let _ = r.into_body().read_to_vec();
+                        break;
+                    }
+                    return Ok(r);
                 }
-                return match status.as_u16() {
-                    200..=299 => Ok(body),
-                    code => Err(anyhow!("HTTP {code} from {url}")),
-                };
-            }
-            Err(e) => {
-                // HTTP error statuses are terminal; transport errors may retry.
-                if matches!(e, ureq::Error::StatusCode(_)) {
-                    return Err(anyhow!("{e}"));
-                }
-                last_err = Some(anyhow!("{e}"));
-                if attempt_no < RETRIES {
-                    std::thread::sleep(Duration::from_secs(1));
+                Err(e @ ureq::Error::StatusCode(_)) => return Err(anyhow!("{e}")),
+                Err(e) => {
+                    // Transport error: try the next transport (direct), or the
+                    // next attempt after a backoff pause.
+                    last_err = Some(anyhow!("{e}"));
                 }
             }
         }
+        if attempt_no < RETRIES {
+            // Ramp the inter-attempt pause 1s, 2s, ... so a brief VPN/proxy
+            // reconnect is absorbed instead of failing the whole deploy.
+            std::thread::sleep(Duration::from_secs(1 + attempt_no as u64));
+        }
     }
     Err(last_err.unwrap_or_else(|| anyhow!("request failed: {url}")))
+}
+
+/// GET a URL and return the response body as text with retry/curl-fallback
+/// semantics of the Python version reduced to: 1 retry after backoff on
+/// connection errors, plus a direct-connection fallback when the ambient proxy
+/// has gone away. Status >= 400 is returned as an error carrying the code.
+pub fn get_text(url: &str) -> anyhow::Result<String> {
+    let res = fetch(url, TIMEOUT, None, false, None)?;
+    let status = res.status().as_u16();
+    let body = res.into_body().read_to_string().context("reading body")?;
+    match status {
+        200..=299 => Ok(body),
+        code => Err(anyhow!("HTTP {code} from {url}")),
+    }
 }
 
 /// GET a URL and return the response body as bytes with the same
 /// allowlist/net.log/retry semantics as [`get_text`]. Used for binary payloads
 /// such as source tarballs.
 pub fn get_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
-    ensure_allowed(url)?;
-    let agent = build_agent(TIMEOUT, None);
-    let mut last_err: Option<anyhow::Error> = None;
-
-    for attempt_no in 0..=RETRIES {
-        let res = attempt(&agent, url);
-
-        match res {
-            Ok(r) => {
-                let status = r.status();
-                let body = r.into_body().read_to_vec().context("reading body")?;
-                if status.as_u16() == 403 && attempt_no < RETRIES {
-                    std::thread::sleep(Duration::from_secs(2 * (attempt_no as u64 + 1)));
-                    continue;
-                }
-                return match status.as_u16() {
-                    200..=299 => Ok(body),
-                    code => Err(anyhow!("HTTP {code} from {url}")),
-                };
-            }
-            Err(e) => {
-                if matches!(e, ureq::Error::StatusCode(_)) {
-                    return Err(anyhow!("{e}"));
-                }
-                last_err = Some(anyhow!("{e}"));
-                if attempt_no < RETRIES {
-                    std::thread::sleep(Duration::from_secs(1));
-                }
-            }
-        }
+    let res = fetch(url, TIMEOUT, None, false, None)?;
+    let status = res.status().as_u16();
+    let body = res.into_body().read_to_vec().context("reading body")?;
+    match status {
+        200..=299 => Ok(body),
+        code => Err(anyhow!("HTTP {code} from {url}")),
     }
-    Err(last_err.unwrap_or_else(|| anyhow!("request failed: {url}")))
 }
 
 /// GET a large body (source tarball) over a slow-but-alive link. The global
@@ -388,38 +429,13 @@ pub fn get_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
 /// allowed to finish, while a socket that truly stopped moving data aborts in
 /// one idle window instead of hanging for the whole budget.
 pub fn get_bytes_slow(url: &str) -> anyhow::Result<Vec<u8>> {
-    ensure_allowed(url)?;
-    let agent = build_agent(SLOW_TIMEOUT, Some(SLOW_BODY_IDLE));
-    let mut last_err: Option<anyhow::Error> = None;
-
-    for attempt_no in 0..=RETRIES {
-        let res = attempt(&agent, url);
-
-        match res {
-            Ok(r) => {
-                let status = r.status();
-                let body = r.into_body().read_to_vec().context("reading slow body")?;
-                if status.as_u16() == 403 && attempt_no < RETRIES {
-                    std::thread::sleep(Duration::from_secs(2 * (attempt_no as u64 + 1)));
-                    continue;
-                }
-                return match status.as_u16() {
-                    200..=299 => Ok(body),
-                    code => Err(anyhow!("HTTP {code} from {url}")),
-                };
-            }
-            Err(e) => {
-                if matches!(e, ureq::Error::StatusCode(_)) {
-                    return Err(anyhow!("{e}"));
-                }
-                last_err = Some(anyhow!("{e}"));
-                if attempt_no < RETRIES {
-                    std::thread::sleep(Duration::from_secs(1));
-                }
-            }
-        }
+    let res = fetch(url, SLOW_TIMEOUT, Some(SLOW_BODY_IDLE), false, None)?;
+    let status = res.status().as_u16();
+    let body = res.into_body().read_to_vec().context("reading slow body")?;
+    match status {
+        200..=299 => Ok(body),
+        code => Err(anyhow!("HTTP {code} from {url}")),
     }
-    Err(last_err.unwrap_or_else(|| anyhow!("request failed: {url}")))
 }
 
 /// GET a byte range (`start..=end`, inclusive) of a large body over a
@@ -430,38 +446,16 @@ pub fn get_bytes_slow(url: &str) -> anyhow::Result<Vec<u8>> {
 /// length check catches it and treats the fetch as failed. Same budgets and
 /// hop-by-hop allowlist gating as [`get_bytes_slow`].
 pub fn get_bytes_range(url: &str, start: u64, end: u64) -> anyhow::Result<Vec<u8>> {
-    ensure_allowed(url)?;
-    let agent = build_agent_identity(SLOW_TIMEOUT, Some(SLOW_BODY_IDLE));
-    let mut last_err: Option<anyhow::Error> = None;
-
-    for attempt_no in 0..=RETRIES {
-        let res = attempt_range(&agent, url, (start, end));
-
-        match res {
-            Ok(r) => {
-                let status = r.status();
-                let body = r.into_body().read_to_vec().context("reading ranged body")?;
-                if status.as_u16() == 403 && attempt_no < RETRIES {
-                    std::thread::sleep(Duration::from_secs(2 * (attempt_no as u64 + 1)));
-                    continue;
-                }
-                return match status.as_u16() {
-                    200..=299 => Ok(body),
-                    code => Err(anyhow!("HTTP {code} from {url}")),
-                };
-            }
-            Err(e) => {
-                if matches!(e, ureq::Error::StatusCode(_)) {
-                    return Err(anyhow!("{e}"));
-                }
-                last_err = Some(anyhow!("{e}"));
-                if attempt_no < RETRIES {
-                    std::thread::sleep(Duration::from_secs(1));
-                }
-            }
-        }
+    let res = fetch(url, SLOW_TIMEOUT, Some(SLOW_BODY_IDLE), true, Some((start, end)))?;
+    let status = res.status().as_u16();
+    let body = res
+        .into_body()
+        .read_to_vec()
+        .context("reading ranged body")?;
+    match status {
+        200..=299 => Ok(body),
+        code => Err(anyhow!("HTTP {code} from {url}")),
     }
-    Err(last_err.unwrap_or_else(|| anyhow!("request failed: {url}")))
 }
 
 /// Probe an allowlisted host with an almost-bodyless HEAD request. Used by
@@ -469,43 +463,56 @@ pub fn get_bytes_range(url: &str, start: u64, end: u64) -> anyhow::Result<Vec<u8
 /// kilobytes — legitimately slow on a throttled link — and would falsely
 /// report "unreachable". Redirects are followed hop-by-hop through the same
 /// allowlist gate as any other request; success means HTTPS + host answered.
+/// When an ambient proxy is configured, a transport failure is retried via a
+/// direct connection once (proxy/VPN may have been switched off moments ago).
 pub fn head_ok(url: &str) -> bool {
     ensure_allowed(url).is_ok_and(|_| {
-        let agent = build_agent(TIMEOUT, None);
-        let mut current = url.to_string();
-        for _ in 0..=MAX_REDIRECTS {
-            let res = match agent.head(&current).call() {
-                Ok(r) => r,
-                Err(e) => {
-                    record_failure(&current, &e);
-                    return false;
-                }
-            };
-            record_outcome(&current, &res);
-            if res.status().is_redirection() {
-                let Some(location) = res
-                    .headers()
-                    .get("location")
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_owned)
-                else {
-                    let _ = res.into_body().read_to_vec();
-                    return false;
-                };
-                let _ = res.into_body().read_to_vec();
-                current = match resolve_redirect(&current, &location) {
-                    Ok(next) => next,
-                    Err(_) => return false,
-                };
-                if ensure_allowed(&current).is_err() {
-                    return false;
-                }
-                continue;
-            }
-            return res.status().is_success();
-        }
-        false
+        let proxied = build_agent(TIMEOUT, None);
+        let direct = ambient_proxy_for(url)
+            .map(|_| agent_with_proxy(TIMEOUT, None, None, false));
+        std::iter::once(&proxied)
+            .chain(direct.iter())
+            .any(|agent| probe_head(agent, url))
     })
+}
+
+/// One HEAD-through-redirects probe against a single transport. Every hop is
+/// gated by the allowlist and net.log-recorded; nothing outside
+/// [`ALLOWED_ENDPOINTS`] is ever contacted.
+fn probe_head(agent: &ureq::Agent, url: &str) -> bool {
+    let mut current = url.to_string();
+    for _ in 0..=MAX_REDIRECTS {
+        let res = match agent.head(&current).call() {
+            Ok(r) => r,
+            Err(e) => {
+                record_failure(&current, &e);
+                return false;
+            }
+        };
+        record_outcome(&current, &res);
+        if res.status().is_redirection() {
+            let Some(location) = res
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+            else {
+                let _ = res.into_body().read_to_vec();
+                return false;
+            };
+            let _ = res.into_body().read_to_vec();
+            current = match resolve_redirect(&current, &location) {
+                Ok(next) => next,
+                Err(_) => return false,
+            };
+            if ensure_allowed(&current).is_err() {
+                return false;
+            }
+            continue;
+        }
+        return res.status().is_success();
+    }
+    false
 }
 
 /// GET a URL and parse JSON.
@@ -543,6 +550,65 @@ mod tests {
         assert!(ensure_allowed("https://raw.githubusercontent.com/a/b/main/f").is_ok());
         // codeload is the archive-redirect target the tarball fallback needs.
         assert!(ensure_allowed("https://codeload.github.com/a/b/tar.gz/master").is_ok());
+    }
+
+    #[test]
+    #[ignore = "network — opt-in live probe of the dead-proxy->direct fallback"]
+    #[allow(unsafe_code)] // test-only env mutation (HTTPS_PROXY)
+    fn direct_fallback_when_proxy_is_dead() {
+        // Opt-in live probe (network): with HTTPS_PROXY pointing at a dead
+        // socket, the fetch must fall back to a direct connection and succeed
+        // against a real allowlisted host. Run manually:
+        //   cargo test --lib -- --ignored direct_fallback_when_proxy_is_dead
+        unsafe {
+            std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:1");
+            std::env::set_var("https_proxy", "");
+            std::env::set_var("ALL_PROXY", "");
+            std::env::set_var("NO_PROXY", "");
+        }
+        let body = get_bytes(
+            "https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/README.md",
+        )
+        .unwrap();
+        unsafe {
+            std::env::remove_var("HTTPS_PROXY");
+            std::env::remove_var("https_proxy");
+            std::env::remove_var("ALL_PROXY");
+            std::env::remove_var("NO_PROXY");
+        }
+        assert!(!body.is_empty());
+    }
+
+    #[test]
+    #[allow(unsafe_code)] // test-only env mutation (HTTPS_PROXY)
+    fn ambient_proxy_decision() {
+        // No proxy configured -> no fallback transport, no proxy route.
+        unsafe {
+            std::env::remove_var("HTTPS_PROXY");
+            std::env::remove_var("https_proxy");
+            std::env::remove_var("ALL_PROXY");
+        }
+        assert!(ambient_proxy_for("https://api.github.com/x").is_none());
+
+        unsafe {
+            std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:9999");
+            std::env::set_var("NO_PROXY", "");
+        }
+        // Proxy applies when the target is not NO_PROXY-exempt.
+        assert!(ambient_proxy_for("https://api.github.com/x").is_some());
+        // NO_PROXY exemption means the route would be direct after all; the
+        // fallback is never armed for a target that already bypasses the proxy.
+        unsafe {
+            std::env::set_var("NO_PROXY", "api.github.com");
+        }
+        assert!(ambient_proxy_for("https://api.github.com/x").is_none());
+
+        unsafe {
+            std::env::remove_var("HTTPS_PROXY");
+            std::env::remove_var("https_proxy");
+            std::env::remove_var("ALL_PROXY");
+            std::env::remove_var("NO_PROXY");
+        }
     }
 
     #[test]
