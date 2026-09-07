@@ -426,9 +426,6 @@ mod tests {
             // read the invoking user's ~/.ssh/tokens again.
             "ProtectHome=read-only\n",
             "Environment=\"HOME=/tmp/vert/.ghost-cache/home\"\n",
-            "InaccessiblePaths=/home/user/.ssh",
-            "/home/user/.config",
-            ".local/state/demo-ghostprovider",
             "PrivateDevices=yes\n",
             "ProcSubset=pid\n",
             "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n",
@@ -436,6 +433,25 @@ mod tests {
         ] {
             assert!(content.contains(needle), "missing {needle:?}");
         }
+// InaccessiblePaths is derived from $HOME (CI runs as /home/runner) and
+// only includes roots that actually exist, so assert the directive is
+// present and every existing secret root made it in.
+let ins = content
+            .lines()
+            .find(|l| l.starts_with("InaccessiblePaths="))
+            .expect("InaccessiblePaths directive must be present");
+for candidate in [".ssh", ".config", ".local/state/demo-ghostprovider"] {
+    let p = crate::paths::home().join(candidate);
+    if !p.exists() {
+        continue;
+    }
+    assert!(
+        ins.contains(p.to_string_lossy().as_ref()),
+        "missing {} in {}",
+        p.display(),
+        ins
+    );
+}        
         assert!(!content.contains("ProtectHome=tmpfs"));
 
         let bare = UnitSpec {
