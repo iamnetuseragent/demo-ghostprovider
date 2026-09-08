@@ -89,9 +89,9 @@ fn main() -> anyhow::Result<()> {
                 }
             });
             match outcome {
-                demo_ghostprovider::hoster::deploy::DeployOutcome::Deployed => {
-                    println!("{}", painter.borrow().summary(true));
-                }
+                // The reachable URL is already printed above ("+ listening on
+                // …"); no extra verdict line needed on success.
+                demo_ghostprovider::hoster::deploy::DeployOutcome::Deployed => {}
                 other => {
                     eprintln!("{}", painter.borrow().summary(false));
                     eprintln!("  reason: {other:?}");
