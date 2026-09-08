@@ -174,11 +174,12 @@ fn event_loop(
                 }
                 Msg::DeployDone(ok) => {
                     if let Screen::Deploy { lines, done } = &mut app.screen {
-                        push_deploy_line(lines, if ok {
-                            "deployment complete — service is up".into()
-                        } else {
-                            "deployment failed".into()
-                        });
+                        // The reachable URL is already in the log ("✔ listening
+                        // on …"); keep the final verdict laconic and only add a
+                        // line when the deploy did NOT surface a URL.
+                        if !ok {
+                            push_deploy_line(lines, "deployment failed".into());
+                        }
                         *done = Some(ok);
                     }
                 }

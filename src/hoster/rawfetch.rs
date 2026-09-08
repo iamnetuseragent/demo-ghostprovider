@@ -505,12 +505,6 @@ pub(crate) fn materialize(url: &str, dest: &Path, pin: Option<&str>) -> anyhow::
         None => resolve_branch(&owner, &repo)?,
     };
     let files = collect_files(&owner, &repo, &refname)?;
-    eprintln!(
-        "source: {} files, {} MiB, ref {}",
-        files.len(),
-        files.iter().map(|(_, s)| *s).sum::<u64>() / (1024 * 1024),
-        refname
-    );
 
     let specs: Arc<Vec<Spec>> = Arc::new(
         files

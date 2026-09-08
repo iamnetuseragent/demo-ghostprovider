@@ -197,14 +197,8 @@ pub fn clone(url: &str, dest: &Path, pin: Option<&str>) -> CloneStatus {
                         last_message: "already cloned (pinned)".into(),
                     };
                 }
-                (Some(want), Some(have)) => {
-                    eprintln!(
-                        "clone: existing checkout is pinned to {have}, requested {want} — recloning"
-                    );
-                }
-                (Some(_), None) => {
-                    eprintln!("clone: existing checkout is unpinned, requested pin — recloning");
-                }
+                (Some(_), Some(_)) => {}
+                (Some(_), None) => {}
                 (None, _) => {
                     return CloneStatus {
                         ok: true,
@@ -213,8 +207,6 @@ pub fn clone(url: &str, dest: &Path, pin: Option<&str>) -> CloneStatus {
                 }
             }
         }
-        // Broken checkout: start over instead of failing the build later.
-        eprintln!("clone: existing copy is incomplete — recloning");
         let _ = force_remove_all(dest);
     }
     let _ = force_remove_all(dest);

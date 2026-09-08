@@ -157,44 +157,60 @@ pub enum DeployOutcome {
     Failed,
 }
 
+/// Lines that earn a spot in the (deliberately laconic) deploy output:
+/// verification and warning lines plus the final reachable URL. Pure progress
+/// chatter — pre-flight, source summary, build steps, unit install, egress
+/// probe, service start — is dropped; the final verdict line is what matters.
+fn screen_line(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with('!')
+        || t.starts_with("warn: ")
+        || t.starts_with("sandbox: ")
+        || t.contains("listening on ")
+}
+
 /// Shared entry point used by both the TUI and the `__deploy` subcommand:
 /// validate the URL against the curated recipes, preflight the build tools,
 /// then run the full deploy pipeline. Progress goes through `log`.
 pub fn run_deployment(url: &str, log: &dyn Fn(String)) -> DeployOutcome {
+    let screen = |line: String| {
+        if screen_line(&line) {
+            log(line);
+        }
+    };
     // The sandbox is mandatory with no opt-out: a missing sandbox is a hard
     // rejection, never a warning — a build must not run as a plain host
     // process. The same rejection path also carries build-user warnings.
     if let Some(block) = super::sandbox::sandbox_blocked_reason() {
-        log(format!("! {block}"));
+        screen(format!("! {block}"));
         return DeployOutcome::Rejected("sandbox-unavailable");
     }
     if crate::netlog::logging_disabled() {
-        log("warn: GHOSTPROVIDER_NO_NETLOG — outbound requests are not written to net.log".into());
+        screen("warn: GHOSTPROVIDER_NO_NETLOG — outbound requests are not written to net.log".into());
     }
 
     let Some((owner, name)) = super::github::parse_github_url(url) else {
-        log("! invalid GitHub URL format".into());
+        screen("! invalid GitHub URL format".into());
         return DeployOutcome::Rejected("bad-url");
     };
     let Some(recipe) = super::recipes::find_recipe(&owner, &name) else {
-        log("! this demo only supports three services:".into());
-        log("  VERT-sh/VERT · searxng/searxng · usememos/memos".into());
+        screen("! this demo only supports three services:".into());
+        screen("! VERT-sh/VERT · searxng/searxng · usememos/memos".into());
         return DeployOutcome::Rejected("not-curated");
     };
 
     // Preflight including per-recipe build tools (audit lesson).
-    log("pre-flight checks...".into());
     let issues = super::preflight::preflight_check(recipe.tools);
     if !issues.is_empty() {
         for i in issues {
-            log(format!("! {i}"));
+            screen(format!("! {i}"));
         }
-        log("! pre-flight failed, aborting".into());
+        screen("! pre-flight failed, aborting".into());
         return DeployOutcome::Rejected("preflight");
     }
     // The sandbox is mandatory and every degrading state was rejected above,
     // so at this point full isolation is in effect — claim it explicitly.
-    log(
+    screen(
         "sandbox: FULL — every build step runs in the mandatory isolated environment (no opt-out)"
             .into(),
     );
@@ -214,12 +230,12 @@ pub fn run_deployment(url: &str, log: &dyn Fn(String)) -> DeployOutcome {
         recipe,
         None,
         DeployHooks {
-            on_status: Some(&|line| log(line.to_string())),
+            on_status: Some(&|line| screen(line.to_string())),
         },
     );
 
     for u in &result.urls {
-        log(format!("listening on {u}"));
+        screen(format!("listening on {u}"));
     }
     if !result.service_names.is_empty() && result.errors.is_empty() {
         DeployOutcome::Deployed
@@ -242,7 +258,7 @@ pub fn deploy_service(
     };
     let mut result = HostResult::default();
     let report_err = |result: &mut HostResult, msg: String| {
-        eprintln!("{msg}");
+        emit(&format!("! {msg}"));
         result.errors.push(msg);
     };
 
@@ -689,6 +705,33 @@ fn tail(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_line_keeps_verdicts_and_warnings_only() {
+        let kept = [
+            "! pre-flight failed, aborting",
+            "warn: runtime egress: OPEN — this host cannot enforce the unit IP filter",
+            "sandbox: FULL — every build step runs in the mandatory isolated environment (no opt-out)",
+            "listening on http://localhost:8888",
+            "! public-test-token leaked in output",
+        ];
+        for line in kept {
+            assert!(screen_line(line), "expected to keep: {line}");
+        }
+        let dropped = [
+            "pre-flight checks...",
+            "cloning repository...",
+            "build...",
+            "build: seeded Go module cache (193 module(s) ready)",
+            "installing systemd unit demo-memos...",
+            "probing runtime egress...",
+            "starting service...",
+            "source tree download complete",
+        ];
+        for line in dropped {
+            assert!(!screen_line(line), "expected to drop: {line}");
+        }
+    }
 
     /// Serializes tests that mutate the process-global XDG_DATA_HOME.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
