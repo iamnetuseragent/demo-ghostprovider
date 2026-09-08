@@ -162,10 +162,10 @@ fn list_tree(url: &str) -> anyhow::Result<TreeResp> {
 
 fn resolve_branch(owner: &str, repo: &str) -> anyhow::Result<String> {
     let meta = format!("https://api.github.com/repos/{owner}/{repo}");
-    if let Ok((_, info)) = httpclient::get_json::<RepoInfo>(&meta) {
-        if !info.default_branch.is_empty() {
-            return Ok(info.default_branch);
-        }
+    if let Ok((_, info)) = httpclient::get_json::<RepoInfo>(&meta)
+        && !info.default_branch.is_empty()
+    {
+        return Ok(info.default_branch);
     }
     for cand in ["main", "master"] {
         if httpclient::get_text(&tree_url(owner, repo, cand)).is_ok() {
@@ -413,10 +413,10 @@ fn assemble(specs: &[Spec], staging: &Path, dest: &Path) -> anyhow::Result<()> {
     use std::io::Write;
     for (idx, spec) in specs.iter().enumerate() {
         let final_path = dest.join(&spec.rel);
-        if let Some(parent) = final_path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                bail!("creating {}: {e}", parent.display());
-            }
+        if let Some(parent) = final_path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            bail!("creating {}: {e}", parent.display());
         }
         if final_path.exists() {
             bail!("path collision at {}", final_path.display());

@@ -159,11 +159,10 @@ fn event_loop(
                         running,
                         seq: cur,
                     } = &mut app.screen
+                        && *cur == seq
                     {
-                        if *cur == seq {
-                            *r = Some(report);
-                            *running = false;
-                        }
+                        *r = Some(report);
+                        *running = false;
                     }
                 }
                 Msg::Log(line) => {
@@ -189,7 +188,7 @@ fn event_loop(
         // Self-heal: any stray glyph left by terminal desync (resize races,
         // tmux quirks, font-width lies) must not outlive ~2s — force a full
         // repaint periodically instead of trusting cell-diff forever.
-        if app.tick % 25 == 0 {
+        if app.tick.is_multiple_of(25) {
             terminal.clear()?;
         }
         terminal.draw(|f| draw(f, app))?;
@@ -281,11 +280,9 @@ fn on_key(app: &mut App, key: KeyCode, mods: KeyModifiers) -> Flow {
     }
     // Main-menu activation touches app.tx and app.screen at once; decide it
     // before the screen match takes its borrow.
-    if let Screen::Main { selected } = app.screen {
-        if matches!(key, KeyCode::Enter | KeyCode::Char(' ')) {
+    if let Screen::Main { selected } = app.screen && matches!(key, KeyCode::Enter | KeyCode::Char(' ')) {
             return main_menu_activate(app, selected);
         }
-    }
     let cmd = command_char(key);
     match &mut app.screen {
         Screen::Main { selected } => match key {
@@ -1009,7 +1006,7 @@ fn draw_confirm_delete(
 
 /// Blinking terminal-style cursor block.
 fn cursor_span(tick: u64) -> Span<'static> {
-    if (tick / 4) % 2 == 0 {
+    if (tick / 4).is_multiple_of(2) {
         Span::styled("█", Style::default().fg(WARN_YELLOW))
     } else {
         Span::raw(" ")

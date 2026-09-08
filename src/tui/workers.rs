@@ -19,10 +19,10 @@ fn deployed_port_map(entries: &[(String, crate::state::ServiceEntry)]) -> HashMa
     let mut map = HashMap::new();
     for (_, entry) in entries {
         for url in &entry.urls {
-            if let Some((_, port)) = url.rsplit_once(':') {
-                if let Ok(port) = port.parse::<u16>() {
-                    map.insert(port, entry.unit_name.clone());
-                }
+            if let Some((_, port)) = url.rsplit_once(':')
+                && let Ok(port) = port.parse::<u16>()
+            {
+                map.insert(port, entry.unit_name.clone());
             }
         }
     }

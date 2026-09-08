@@ -427,11 +427,9 @@ pub fn deploy_service(
             return result;
         }
     };
-    if recipe.searxng {
-        if let Err(e) = prepare_searxng_config(&project_dir, port) {
-            report_err(&mut result, format!("searxng config failed: {e}"));
-            return result;
-        }
+    if recipe.searxng && let Err(e) = prepare_searxng_config(&project_dir, port) {
+        report_err(&mut result, format!("searxng config failed: {e}"));
+        return result;
     }
     let exec_start = resolve_start(recipe, &project_dir, port);
 

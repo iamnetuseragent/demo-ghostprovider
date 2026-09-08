@@ -108,10 +108,9 @@ pub fn package_json_requirements(text: &str) -> Vec<(Tool, Ver)> {
         .get("packageManager")
         .and_then(|x| x.as_str())
         .map(|s| s.split_once('@').map(|(_, ver)| ver))
+        && let Some(ver) = parse_version(pm)
     {
-        if let Some(ver) = parse_version(pm) {
-            out.push((Tool::Pnpm, ver));
-        }
+        out.push((Tool::Pnpm, ver));
     }
     if let Some(engines) = v.get("engines").and_then(|x| x.as_object()) {
         for (key, val) in engines {
@@ -343,15 +342,15 @@ pub fn check_findings(project_dir: &Path, service: &str) -> Vec<Finding> {
             reqs.extend(package_json_requirements(&t));
         }
     }
-    if let Ok(t) = std::fs::read_to_string(project_dir.join("go.mod")) {
-        if let Some(v) = go_mod_requirement(&t) {
-            reqs.push((Tool::Go, v));
-        }
+    if let Ok(t) = std::fs::read_to_string(project_dir.join("go.mod"))
+        && let Some(v) = go_mod_requirement(&t)
+    {
+        reqs.push((Tool::Go, v));
     }
-    if let Ok(t) = std::fs::read_to_string(project_dir.join("pyproject.toml")) {
-        if let Some(v) = pyproject_requirement(&t) {
-            reqs.push((Tool::Python, v));
-        }
+    if let Ok(t) = std::fs::read_to_string(project_dir.join("pyproject.toml"))
+        && let Some(v) = pyproject_requirement(&t)
+    {
+        reqs.push((Tool::Python, v));
     }
     reqs.sort_by_key(|(t, _)| *t);
     reqs.dedup_by_key(|(t, _)| *t);

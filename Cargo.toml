@@ -2,7 +2,7 @@
 name = "demo-ghostprovider"
 version = "0.0.28"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Local-first demo hosting panel: deploy three curated self-hosted services as hardened systemd user services. Rust rewrite of demo-ghostprovider."
 license = "MIT"
 
@@ -10,12 +10,12 @@ license = "MIT"
 anyhow = "1"
 crossterm = "0.28"
 libc = "0.2"
-ratatui = "0.29"
+ratatui = "0.30"
 regex-lite = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-ureq = { version = "3.4.0", default-features = false, features = ["rustls", "gzip", "charset"] }
+ureq = { version = "3.4.1", default-features = false, features = ["rustls", "gzip", "charset"] }
 
 [profile.release]
 lto = true

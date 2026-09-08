@@ -326,10 +326,8 @@ pub fn remote_len(url: &str) -> anyhow::Result<u64> {
         } else {
             s.trim().parse::<u64>().ok()
         };
-        if let Some(n) = parsed {
-            if n > 0 {
-                return Ok(n);
-            }
+        if let Some(n) = parsed && n > 0 {
+            return Ok(n);
         }
     }
     anyhow::bail!("no usable size header in probe response for {url}")
