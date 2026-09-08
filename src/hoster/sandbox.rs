@@ -157,24 +157,17 @@ pub fn effective_mode() -> EffectiveSandbox {
     }
 }
 
-/// A deploy's security invariant: the build sandbox is mandatory and there is
-/// no opt-out. If the sandbox machinery (`systemd-run`) is missing, a deploy
-/// must be rejected — a build can never quietly degrade to a plain unisolated
-/// host process. `None` means the deploy may proceed.
+/// A deploy's security invariant: full build isolation is mandatory and there
+/// is no opt-out, and a deploy is only allowed when it is actually achievable.
+/// [`sandbox_grade`] carries the verdict; [`SandboxGrade::is_full`] must be
+/// true before a deploy may proceed:
 ///
-/// A configured-but-unusable `GHOSTPROVIDER_BUILD_USER` is NOT a rejection:
-/// the run_sandbox isolation itself is still active, so the deploy proceeds
-/// with a `! sandbox: ALMOST` status line (see [`sandbox_grade`]).
-pub fn sandbox_blocked_reason() -> Option<&'static str> {
-    if !which("systemd-run") {
-        return Some(
-            "build sandbox unavailable (systemd-run not found) — refusing to build \
-             without isolation (the sandbox is mandatory)",
-        );
-    }
-    None
-}
-
+///   * `None`   — the sandbox machinery (`systemd-run`) is missing; a build
+///     would run as a plain unisolated host process → hard rejection.
+///   * `Almost` — the systemd-run sandbox is up, but the required full
+///     isolation is degraded (configured dedicated build user unusable) →
+///     also a hard rejection: the deploy fails, never continues weakened.
+///
 /// How much build isolation is actually in effect, reported on the deploy
 /// status line: `sandbox: FULL` / `! sandbox: ALMOST` / `! sandbox: NO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -442,7 +435,7 @@ pub fn run_sandboxed(
     precreate_cache_dirs(cwd, &cache);
 
     // A build runs ONLY inside the hardened sandbox; a missing systemd-run is
-    // a hard failure (see sandbox_blocked_reason), never a fallback.
+    // a hard failure (deploy only proceeds when SandboxGrade::Full), never a fallback.
     if !which("systemd-run") {
         anyhow::bail!(
             "build sandbox unavailable (systemd-run not found) — refusing to build \
