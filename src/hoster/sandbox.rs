@@ -157,11 +157,14 @@ pub fn effective_mode() -> EffectiveSandbox {
     }
 }
 
-/// A deploy's security invariant: the sandbox is mandatory and there is no
-/// opt-out. Any silent reduction — `systemd-run` missing, or a build user
-/// requested but unusable from this process — is a hard error so a deploy can
-/// never quietly degrade to a plain host process. `None` means the deploy may
-/// proceed. Callers surface this as a rejection, not a warning.
+/// A deploy's security invariant: the build sandbox is mandatory and there is
+/// no opt-out. If the sandbox machinery (`systemd-run`) is missing, a deploy
+/// must be rejected — a build can never quietly degrade to a plain unisolated
+/// host process. `None` means the deploy may proceed.
+///
+/// A configured-but-unusable `GHOSTPROVIDER_BUILD_USER` is NOT a rejection:
+/// the run_sandbox isolation itself is still active, so the deploy proceeds
+/// with a `! sandbox: ALMOST` status line (see [`sandbox_grade`]).
 pub fn sandbox_blocked_reason() -> Option<&'static str> {
     if !which("systemd-run") {
         return Some(
@@ -169,10 +172,48 @@ pub fn sandbox_blocked_reason() -> Option<&'static str> {
              without isolation (the sandbox is mandatory)",
         );
     }
-    if let Some(reason) = build_user_unusable_reason() {
-        return Some(reason);
-    }
     None
+}
+
+/// How much build isolation is actually in effect, reported on the deploy
+/// status line: `sandbox: FULL` / `! sandbox: ALMOST` / `! sandbox: NO`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxGrade {
+    /// Full isolation: the systemd-run sandbox is active and no layer is
+    /// degraded.
+    Full,
+    /// The systemd-run sandbox is active, but a configured dedicated build
+    /// user is unusable from this process (needs root / doesn't exist), so
+    /// the sandboxed build runs as the invoking user.
+    Almost,
+    /// The sandbox machinery is missing; a build would run unisolated.
+    None,
+}
+
+/// Verdict for the deploy status line, computed from the actual host state.
+pub fn sandbox_grade() -> SandboxGrade {
+    if !which("systemd-run") {
+        return SandboxGrade::None;
+    }
+    if build_user_unusable_reason().is_some() {
+        SandboxGrade::Almost
+    } else {
+        SandboxGrade::Full
+    }
+}
+
+impl SandboxGrade {
+    pub fn label(&self) -> &'static str {
+        match self {
+            SandboxGrade::Full => "sandbox: FULL",
+            SandboxGrade::Almost => "sandbox: ALMOST",
+            SandboxGrade::None => "sandbox: NO",
+        }
+    }
+
+    pub fn is_full(&self) -> bool {
+        matches!(self, SandboxGrade::Full)
+    }
 }
 
 /// Env var naming the dedicated unprivileged build user (e.g. `ghostbuild`).
@@ -764,6 +805,23 @@ mod tests {
         ] {
             assert!(joined.contains(expect), "missing {expect} in build unit");
         }
+    }
+
+    #[test]
+    fn sandbox_grade_labels_are_distinct() {
+        assert_ne!(SandboxGrade::Full.label(), SandboxGrade::Almost.label());
+        assert_ne!(SandboxGrade::Almost.label(), SandboxGrade::None.label());
+        assert_ne!(SandboxGrade::Full.label(), SandboxGrade::None.label());
+        for grade in [
+            SandboxGrade::Full,
+            SandboxGrade::Almost,
+            SandboxGrade::None,
+        ] {
+            assert!(grade.label().starts_with("sandbox: "));
+        }
+        assert!(SandboxGrade::Full.is_full());
+        assert!(!SandboxGrade::Almost.is_full());
+        assert!(!SandboxGrade::None.is_full());
     }
 
     #[test]

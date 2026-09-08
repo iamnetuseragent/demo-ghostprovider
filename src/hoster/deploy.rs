@@ -180,9 +180,12 @@ pub fn run_deployment(url: &str, log: &dyn Fn(String)) -> DeployOutcome {
     };
     // The sandbox is mandatory with no opt-out: a missing sandbox is a hard
     // rejection, never a warning — a build must not run as a plain host
-    // process. The same rejection path also carries build-user warnings.
-    if let Some(block) = super::sandbox::sandbox_blocked_reason() {
-        screen(format!("! {block}"));
+    // process.
+    if super::sandbox::sandbox_blocked_reason().is_some() {
+        screen(
+            "! sandbox: NO — refusing to build without isolation (the sandbox is mandatory)"
+                .into(),
+        );
         return DeployOutcome::Rejected("sandbox-unavailable");
     }
     if crate::netlog::logging_disabled() {
@@ -208,12 +211,21 @@ pub fn run_deployment(url: &str, log: &dyn Fn(String)) -> DeployOutcome {
         screen("! pre-flight failed, aborting".into());
         return DeployOutcome::Rejected("preflight");
     }
-    // The sandbox is mandatory and every degrading state was rejected above,
-    // so at this point full isolation is in effect — claim it explicitly.
-    screen(
-        "sandbox: FULL — every build step runs in the mandatory isolated environment (no opt-out)"
-            .into(),
-    );
+    // The sandbox is mandatory and every hard-degrading state was rejected
+    // above, so at this point isolation is in effect. Report the honest
+    // verdict: `sandbox: FULL`, or `! sandbox: ALMOST` when the only weak
+    // point is an unusable optional dedicated build user.
+    match super::sandbox::sandbox_grade() {
+        super::sandbox::SandboxGrade::Full => screen("sandbox: FULL".into()),
+        super::sandbox::SandboxGrade::Almost => screen(
+            "! sandbox: ALMOST — GHOSTPROVIDER_BUILD_USER set but unusable; builds run \
+             as the invoking user (sandbox still active)"
+                .into(),
+        ),
+        super::sandbox::SandboxGrade::None => {
+            // Unreachable: sandbox_blocked_reason() rejected the deploy above.
+        }
+    }
 
     let analysis = RepoAnalysis {
         url: url.to_string(),
@@ -711,7 +723,9 @@ mod tests {
         let kept = [
             "! pre-flight failed, aborting",
             "warn: runtime egress: OPEN — this host cannot enforce the unit IP filter",
-            "sandbox: FULL — every build step runs in the mandatory isolated environment (no opt-out)",
+            "sandbox: FULL",
+            "! sandbox: ALMOST — GHOSTPROVIDER_BUILD_USER set but unusable; builds run as the invoking user (sandbox still active)",
+            "! sandbox: NO — refusing to build without isolation (the sandbox is mandatory)",
             "listening on http://localhost:8888",
             "! public-test-token leaked in output",
         ];
