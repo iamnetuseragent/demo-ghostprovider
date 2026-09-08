@@ -137,7 +137,7 @@ fn random_hex(bytes: usize) -> anyhow::Result<String> {
 
 /// Stop and delete a previously deployed unit so it can be replaced cleanly.
 fn stop_existing(service_name: &str) {
-    let unit = crate::paths::user_unit_dir().join(format!("{}.service", service_name));
+    let unit = crate::paths::user_unit_dir().join(format!("{service_name}.service"));
     if unit.is_file() {
         remove_unit(service_name);
         super::secrets::remove_env_file(service_name);
@@ -369,8 +369,7 @@ pub fn deploy_service(
     if recipe.language == "Go" {
         match super::goenv::seed_go_modules(&project_dir) {
             Ok(n) => emit(&format!(
-                "build: seeded Go module cache ({} module(s) ready)",
-                n
+                "build: seeded Go module cache ({n} module(s) ready)"
             )),
             Err(e) => {
                 // Go services have no prefetch step for modules (the seeder

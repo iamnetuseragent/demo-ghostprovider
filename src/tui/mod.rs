@@ -1237,7 +1237,7 @@ fn draw_services(
                     }),
                 ),
                 Span::styled(
-                    format!("{:<16}", name),
+                    format!("{name:<16}"),
                     Style::default().fg(name_fg).add_modifier(if sel {
                         Modifier::BOLD
                     } else {

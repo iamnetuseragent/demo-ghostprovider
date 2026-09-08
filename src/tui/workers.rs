@@ -92,7 +92,7 @@ pub(super) fn spawn_scan(tx: Sender<Msg>, seq: u64) {
             out.push_str(&format!("  {:<6} {}\n", "PORT", "SERVICE"));
             for (port, unit) in &port_rows {
                 match unit {
-                    Some(unit) => out.push_str(&format!("  {:<6} {unit} (deployed)\n", port)),
+                    Some(unit) => out.push_str(&format!("  {port:<6} {unit} (deployed)\n")),
                     None => out.push_str(&format!("  {port:<6}\n")),
                 }
             }
