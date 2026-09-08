@@ -35,26 +35,49 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
 
 ## Security Model
 
-- **All data stays local** — no telemetry. Outbound requests are locked to a compiled-in HTTPS allowlist (`api.github.com`, `github.com`, `raw.githubusercontent.com`, `codeload.github.com`, `proxy.golang.org`, `storage.googleapis.com`), and every redirect hop is re-checked against it before a connection opens. Every request is logged to net.log; `demo-ghostprovider --show-endpoints` prints the allowlist and session counters so you can verify instead of trust.
-- **No root required** — services run as systemd user-level units
-- **Explicit confirmation before deploy** — always asks YES/NO first
-- **Service sandboxing:**
-  - `NoNewPrivileges=yes`; `ProtectHome=read-only`; `ProtectSystem=strict` (/usr, /boot, /etc read-only)
-  - **Privacy blanking** — `InaccessiblePaths` hides the invoker's secret roots (`~/.ssh`, `~/.config`, `~/.gnupg`, `~/.netrc`, `~/.aws`, `~/.cache`, `~/.local/state/demo-ghostprovider`, whatever exists on your machine) so a compromised service cannot read keys or tokens; `$HOME` and `XDG_*` are redirected into the project's `.ghost-cache`
-  - `ReadWritePaths` restricted to the project directory — caches stay inside `.ghost-cache` and are deleted with the service
-  - **Seccomp deny-list** — `SystemCallFilter` denies `@mount @swap @reboot @cpu-emulation @obsolete @module @raw-io @clock` on both build units and services
-  - **Offline build** — dependencies are pre-fetched before the sandboxed build (Go module zips, pip wheelhouse, bun/pnpm stores), which then runs under `PrivateNetwork=yes`; downloaded code never executes during fetching (pip `--only-binary`, bun/pnpm skip lifecycle scripts)
-  - **Resource caps** — build units and services each carry `MemoryHigh/MemoryMax/TasksMax/CPUQuota` alongside the runtime deadline, so no unit can fork/memory-storm the machine before its cap
-  - **Device/proc/family footprint minimized** — `PrivateDevices=yes` (no raw `/dev`), `ProtectProc=invisible` + `ProcSubset=pid` (no `/proc/sys`, `/proc/net`, no other-user processes), `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` (no netlink/other families)
-  - Kernel locked: `ProtectKernelTunables/Modules/ControlGroups`, `RestrictNamespaces`, `LockPersonality`, `RestrictRealtime/SUIDSGID`, empty `CapabilityBoundingSet`
-  - **Credential scrub** — builds and services never inherit `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `BUN_AUTH_TOKEN`, `DOCKER_AUTH_CONFIG`, `OPENCODE_*`/`OPENCHAMBER_*`, or ambient session endpoints (SSH agent, D-Bus, X11) — even in the host-phase dependency prefetch
-  - **`$HOME` redirected** in the build sandbox to `.ghost-cache/home`, so build code tries to read key-material the way it always does but is redirected to an empty, disposable directory in the sandbox (`~/.ssh`, `~/.netrc`, `~/.config`, gpg/SSH agent sockets) rather than the real ones — even a built-in local file read cannot reach the host's keys
-  - **Mandatory sandbox** — the build sandbox has no opt-out and never degrades: if `systemd-run` is unavailable the deploy is *rejected*; a build can never run as a plain unisolated host process
-  - **No runtime egress** — every deployed service is locked to loopback at the systemd firewall (`IPAddressDeny=any` + `IPAddressAllow=127.0.0.1 ::1`), so even a compromised build output cannot call out to the internet; anything found binding a non-loopback port prints an explicit `warn:` (its external reach is blocked by the same filter)
-  - **Deadline** — every build command runs under a 5400s timeout, so an untrusted build can't wedge your session
-  - **Auditable** — `--verify-sandbox` detects sandbox escapes under strace; `--selftest` is the E2E systemd check
-- **Fixed-commit builds** — each service is pinned to an exact commit SHA, so redeploys are reproducible and a moved `main` can't silently change what you build
-- **Release supply chain** — the minisign secret key never lives on GitHub; releases are signed locally, signatures are committed, and CI refuses to publish anything unsigned
+The guarantees below are commitments, not settings: they are enforced by code
+and by tests in this repository, so they hold across releases without this
+document being updated. The concrete mechanisms (systemd directives in
+`src/hoster/units.rs`, build-sandbox properties in `src/hoster/sandbox.rs`,
+the network allowlist in `src/netlog.rs`) may evolve — they are the
+implementation; the invariants below are the contract.
+
+- **All data stays local** — no telemetry, ever. This binary's only network
+  contacts are to a small allowlist compiled in at build time; every request is
+  re-checked against it on each redirect hop and written to net.log. Verify
+  instead of trust: `demo-ghostprovider --show-endpoints` prints the allowlist
+  and this session's request counters.
+- **No root required** — everything runs as systemd user-level units; no step
+  in deploy, run, or cleanup ever elevates privileges.
+- **Explicit confirmation before deploy** — the panel always asks a clear
+  YES/NO before touching the machine; there are no silent defaults.
+- **Service sandboxing** — code from an upstream you did not write runs only
+  under hard isolation that cannot be opted out of or silently skipped:
+  - *Mandatory build sandbox* — fetching and building run inside an isolated
+    environment (no network, `$HOME` redirected to a disposable directory). If
+    that isolation cannot be provided, the deploy is rejected; a build can
+    never run as a plain unisolated host process, by construction.
+  - *Private by default* — invoker secret roots (`~/.ssh`, `~/.config`, gpg/SSH
+    agent sockets, …) are blanked from every unit, private credentials are
+    scrubbed from build and service environments, and filesystem writes are
+    confined to the project's `.ghost-cache`.
+  - *No runtime egress* — deployed services are locked to loopback, so a
+    compromised service cannot call out to the internet. Where a kernel cannot
+    enforce the lock (unprivileged eBPF disabled), that is surfaced as an
+    explicit warning — never silently assumed; a hard guarantee there needs a
+    host firewall.
+  - *Constrained and deadlined* — every unit carries per-service resource caps
+    and the build has a hard deadline, so nothing untrusted can wedge the
+    session or the machine.
+  - *Verified, not asserted* — `--verify-sandbox` audits the sandbox under
+    strace; `--selftest` proves unit generation → start → serve against the
+    live systemd manager.
+- **Fixed-commit builds** — each service is pinned to an exact commit SHA, so
+  redeploys are reproducible and a moved upstream `main` cannot change what is
+  built.
+- **Signed releases** — the signing key never lives on GitHub or CI; releases
+  are signed locally, signatures are committed, and CI refuses to publish
+  anything unsigned.
 
 ## System Scan
 
