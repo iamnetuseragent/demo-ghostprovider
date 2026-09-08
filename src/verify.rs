@@ -18,9 +18,7 @@
 //! normal deploy path. `systemd-run` and its hardening must actually be in
 //! effect for the result to be meaningful; if `systemd-run` is missing the
 //! audit refuses to run (`EffectiveSandbox::FallbackPlain`), because there is
-//! no isolation left to audit. The explicit `GHOSTPROVIDER_NO_SANDBOX`
-//! opt-out (`DisabledByEnv`) still runs so the helper can show how weak the
-//! "no sandbox" mode really is.
+//! no isolation left to audit.
 
 use std::path::Path;
 
@@ -57,9 +55,6 @@ pub fn run() -> anyhow::Result<()> {
     match mode {
         EffectiveSandbox::Full => {
             println!("sandbox mode: FULL (hardened systemd-run in effect)");
-        }
-        EffectiveSandbox::DisabledByEnv => {
-            println!("WARN: sandbox disabled by GHOSTPROVIDER_NO_SANDBOX — unit will NOT be hardened. Result is not a security guarantee.");
         }
         EffectiveSandbox::FallbackPlain => {
             eprintln!(

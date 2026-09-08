@@ -11,6 +11,7 @@
 //!   --verify-sandbox     audit the hardened build sandbox under strace:
 //!                        no outbound connects, no code-loading exec's
 //!   __serve-static DIR PORT   internal: static server used by deployed units
+//!   __egress-probe       internal: probe beat for runtime egress checks
 
 #![deny(unsafe_code)]
 
@@ -64,6 +65,9 @@ fn main() -> anyhow::Result<()> {
             verify::run()?;
         }
         // Internal subcommand used by generated systemd units. Not advertised.
+        Some("__egress-probe") => {
+            demo_ghostprovider::hoster::egress::run_probe_cmd()?;
+        }
         Some("__serve-static") => {
             let dir = args.get(1).context("usage: __serve-static DIR PORT")?;
             let port: u16 = args

@@ -45,10 +45,6 @@ pub struct DemoRecipe {
     pub searxng: bool,
     /// Executables required on PATH for the build steps to succeed.
     pub tools: &'static [&'static str],
-    /// Runtime needs no outbound network (a built-in static server for
-    /// example): the unit gets `IPAddressAllow=loopback` so a compromised
-    /// build output can never call out to the internet.
-    pub loopback_only: bool,
     /// systemd resource caps for the deployed unit (cgroup memory/tasks
     /// bounds): a runaway demo service must never grind the whole user
     /// session. See `units.rs::ResourceLimits`.
@@ -106,7 +102,6 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         port: 0,
         searxng: false,
         tools: &["bun"],
-        loopback_only: true,
         res: crate::hoster::units::ResourceLimits {
             memory_high: Some("256M"),
             memory_max: Some("384M"),
@@ -137,7 +132,6 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         searxng: true,
         plugins: &[],
         tools: &["python3"],
-        loopback_only: false,
         res: crate::hoster::units::ResourceLimits {
             memory_high: Some("768M"),
             memory_max: Some("1536M"),
@@ -180,7 +174,6 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
         searxng: false,
         plugins: &[],
         tools: &["pnpm", "go"],
-        loopback_only: false,
         res: crate::hoster::units::ResourceLimits {
             memory_high: Some("512M"),
             memory_max: Some("1024M"),

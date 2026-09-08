@@ -257,7 +257,6 @@ mod tests {
                 project_dir: format!("/tmp/{unit}"),
                 url: "https://example.com/x".into(),
                 urls: urls.iter().map(|s| s.to_string()).collect(),
-                insecure_build: false,
             },
         )
     }

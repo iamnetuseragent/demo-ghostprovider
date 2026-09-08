@@ -161,10 +161,9 @@ pub enum DeployOutcome {
 /// validate the URL against the curated recipes, preflight the build tools,
 /// then run the full deploy pipeline. Progress goes through `log`.
 pub fn run_deployment(url: &str, log: &dyn Fn(String)) -> DeployOutcome {
-    // Ambient opt-outs that reduce a transparency/isolation guarantee must be
-    // announced up front — never silently downgrade protection.
-    // A missing sandbox is a hard rejection, not a warning: unless the user
-    // explicitly opted out, a build must not run as a plain host process.
+    // The sandbox is mandatory with no opt-out: a missing sandbox is a hard
+    // rejection, never a warning — a build must not run as a plain host
+    // process. The same rejection path also carries build-user warnings.
     if let Some(block) = super::sandbox::sandbox_blocked_reason() {
         log(format!("! {block}"));
         return DeployOutcome::Rejected("sandbox-unavailable");
@@ -450,7 +449,6 @@ pub fn deploy_service(
         description: &format!("demo: {}", recipe.description),
         env_file: env_file.as_deref(),
         extra_env: &[],
-        loopback_only: recipe.loopback_only,
         res: recipe.res,
     };
     if let Err(e) = create_unit(&spec) {
@@ -458,11 +456,27 @@ pub fn deploy_service(
         return result;
     }
 
+    // The unit is rendered with IPAddressDeny=any + loopback-only allow, but
+    // that filter needs the kernel's eBPF and silently reverts to decoration
+    // on hosts where unprivileged BPF is locked out (Ubuntu default). Probe
+    // and report the real verdict — never assume the directive is enforced.
+    emit("probing runtime egress...");
+    match super::egress::verify_runtime_egress() {
+        super::egress::EgressVerdict::Enforced => {}
+        v => {
+            let text = format!("warn: {}", v.label());
+            emit(&text);
+        }
+    }
+
     // ── start + verify (polling; see units.rs / FINDINGS.md) ──
     // A non-zero exit from `systemctl --user start` means the unit/job was
     // rejected outright (bad unit, dead user manager), not merely slow to
     // activate — with `--no-block` that must not be masked as a later
     // activation check (same discipline as selftest.rs). Fail closed.
+    // wait_until_active budgets a grace period for the queued async job, so a
+    // healthy unit whose first is-active poll wins the race is not miscounted
+    // as a crash.
     emit("starting service...");
     let started = Command::new("systemctl")
         .args(["--user", "start", "--no-block", recipe.service_name])
@@ -538,10 +552,6 @@ pub fn deploy_service(
             project_dir: project_dir.to_string_lossy().into_owned(),
             url: analysis.url.clone(),
             urls: vec![format!("http://localhost:{port}")],
-            // Reachable only via the explicit GHOSTPROVIDER_NO_SANDBOX opt-out
-            // (every other reduction is blocked earlier): record that this
-            // service's build ran unisolated so the fact survives the moment.
-            insecure_build: super::sandbox::build_was_insecure(),
         },
     )
     .context("registering state")
