@@ -35,49 +35,15 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
 
 ## Security Model
 
-The guarantees below are commitments, not settings: they are enforced by code
-and by tests in this repository, so they hold across releases without this
-document being updated. The concrete mechanisms (systemd directives in
-`src/hoster/units.rs`, build-sandbox properties in `src/hoster/sandbox.rs`,
-the network allowlist in `src/netlog.rs`) may evolve — they are the
-implementation; the invariants below are the contract.
+Here is the security module that Ghost Provider uses, this is the necessary architecture for the secure operation of the software.
 
-- **All data stays local** — no telemetry, ever. This binary's only network
-  contacts are to a small allowlist compiled in at build time; every request is
-  re-checked against it on each redirect hop and written to net.log. Verify
-  instead of trust: `demo-ghostprovider --show-endpoints` prints the allowlist
-  and this session's request counters.
-- **No root required** — everything runs as systemd user-level units; no step
-  in deploy, run, or cleanup ever elevates privileges.
-- **Explicit confirmation before deploy** — the panel always asks a clear
-  YES/NO before touching the machine; there are no silent defaults.
-- **Service sandboxing** — code from an upstream you did not write runs only
-  under hard isolation that cannot be opted out of or silently skipped:
-  - *Mandatory build sandbox* — fetching and building run inside an isolated
-    environment (no network, `$HOME` redirected to a disposable directory). If
-    that isolation cannot be provided, the deploy is rejected; a build can
-    never run as a plain unisolated host process, by construction.
-  - *Private by default* — invoker secret roots (`~/.ssh`, `~/.config`, gpg/SSH
-    agent sockets, …) are blanked from every unit, private credentials are
-    scrubbed from build and service environments, and filesystem writes are
-    confined to the project's `.ghost-cache`.
-  - *No runtime egress* — deployed services are locked to loopback, so a
-    compromised service cannot call out to the internet. Where a kernel cannot
-    enforce the lock (unprivileged eBPF disabled), that is surfaced as an
-    explicit warning — never silently assumed; a hard guarantee there needs a
-    host firewall.
-  - *Constrained and deadlined* — every unit carries per-service resource caps
-    and the build has a hard deadline, so nothing untrusted can wedge the
-    session or the machine.
-  - *Verified, not asserted* — `--verify-sandbox` audits the sandbox under
-    strace; `--selftest` proves unit generation → start → serve against the
-    live systemd manager.
-- **Fixed-commit builds** — each service is pinned to an exact commit SHA, so
-  redeploys are reproducible and a moved upstream `main` cannot change what is
-  built.
-- **Signed releases** — the signing key never lives on GitHub or CI; releases
-  are signed locally, signatures are committed, and CI refuses to publish
-  anything unsigned.
+- **All data stays local**
+
+- **No root required**
+
+- **Explicit confirmation before deploy**
+
+- **Sandbox**
 
 ## System Scan
 
