@@ -6,13 +6,9 @@
 
 [advisories]
 version = 2
-ignore = [
-    # Transitive proc-macro pulled by ratatui (our TUI). We never call into it;
-    # it only exists to synthesize identifiers at compile time. The advisory is
-    # "unmaintained" with no patched release, and there is no drop-in swap short
-    # of replacing the TUI framework. Not exploitable in this binary.
-    "RUSTSEC-2024-0436",
-]
+# No stale ignores: the TUI stack now sits on ratatui 0.30 (lru 0.18.4), which
+# cleared the previously-ignored RUSTSEC-2024-0436/paste and the lru "unsound"
+# advisories. Keep this list empty unless a real, justified exception exists.
 
 [bans]
 multiple-versions = "allow"

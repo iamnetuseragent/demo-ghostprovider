@@ -188,19 +188,18 @@ fn audit_trace(trace: &str, work: &Path) -> (bool, Vec<String>) {
         // A traced child may be voiced even when we could not attach; skip the
         // "detached/inherit" punctuation noise and work on raw lines.
         let body = line;
-        if body.contains("connect(") {
-            if let Some(addr) = connect_addr(body) {
-                if !is_loopback(&addr) && !addr.starts_with("AF_UNIX") {
-                    problems.push(format!("outbound connect: {addr}\n    {line}"));
-                }
-            }
+        if body.contains("connect(")
+            && let Some(addr) = connect_addr(body)
+            && !is_loopback(&addr)
+            && !addr.starts_with("AF_UNIX")
+        {
+            problems.push(format!("outbound connect: {addr}\n    {line}"));
         }
-        if body.contains("execve(") {
-            if let Some(path) = exec_path(body) {
-                if !is_system_bin(&path) || forbidden_prefix(&path, work) {
-                    problems.push(format!("code-loading execve: {path}\n    {line}"));
-                }
-            }
+        if body.contains("execve(")
+            && let Some(path) = exec_path(body)
+            && (!is_system_bin(&path) || forbidden_prefix(&path, work))
+        {
+            problems.push(format!("code-loading execve: {path}\n    {line}"));
         }
     }
     (problems.is_empty(), problems)
