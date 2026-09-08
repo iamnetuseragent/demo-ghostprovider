@@ -123,7 +123,10 @@ impl ResourceLimits {
 /// home + inaccessible invoker secret roots, strict-ish filesystem
 /// protection with a writable working dir, kernel/control-group locks,
 /// seccomp deny-list, empty capability bounding set, per-recipe
-/// CPU/memory/tasks caps, loopback-only when applicable.
+/// CPU/memory/tasks caps. Every unit is locked to loopback: services have
+/// IP-level egress removed at the systemd firewall (`IPAddressDeny=any` +
+/// `IPAddressAllow=127.0.0.1 ::1`), so a compromised build output can never
+/// phone home.
 pub struct UnitSpec<'a> {
     pub service_name: &'a str,
     pub working_dir: &'a Path,
@@ -131,10 +134,6 @@ pub struct UnitSpec<'a> {
     pub description: &'a str,
     pub env_file: Option<&'a Path>,
     pub extra_env: &'a [(String, String)],
-    /// Recipe's runtime needs no outbound network (vert's built-in static
-    /// server): lock the unit to loopback so a compromised build output can
-    /// never phone home.
-    pub loopback_only: bool,
     /// Resource caps rendered into the unit (see `ResourceLimits`).
     pub res: ResourceLimits,
 }
@@ -253,11 +252,11 @@ fn render_unit(spec: &UnitSpec) -> anyhow::Result<String> {
     // a single value and stays unquoted.
     let working = escape_unit_value(&spec.working_dir.to_string_lossy());
     let inaccessible = inaccessible_paths();
-    let ip_allow = if spec.loopback_only {
-        "IPAddressAllow=127.0.0.1 ::1\n"
-    } else {
-        ""
-    };
+    // Egress is removed for EVERY service. IPAddressAllow takes precedence
+    // over IPAddressDeny, so `Deny=any` + `Allow=127.0.0.1 ::1` means the unit
+    // may only talk to loopback: the localhost:PORT surface stays reachable
+    // while any outbound connection fails at the systemd firewall level.
+    const IP_FILTER: &str = "IPAddressDeny=any\nIPAddressAllow=127.0.0.1 ::1\n";
     let content = format!(
         "[Unit]\nDescription={desc}\nAfter=network.target\n\n\
           [Service]\nType=simple\nWorkingDirectory={working}\nExecStart={exec}\n\
@@ -277,7 +276,7 @@ fn render_unit(spec: &UnitSpec) -> anyhow::Result<String> {
          RestrictNamespaces=yes\nLockPersonality=yes\nRestrictRealtime=yes\n\
 RestrictSUIDSGID=yes\nProtectProc=invisible\nPrivateDevices=yes\nProcSubset=pid\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\nCapabilityBoundingSet=\nUMask=0077\n\
           SystemCallFilter=~@mount @swap @reboot @cpu-emulation @obsolete @module @raw-io @clock\n\
-          {res_lines}{ip_allow}[Install]\nWantedBy=default.target\n",
+          {res_lines}{ip_filter}[Install]\nWantedBy=default.target\n",
         desc = escape_unit_value(if spec.description.is_empty() {
             &service_name
         } else {
@@ -286,6 +285,7 @@ RestrictSUIDSGID=yes\nProtectProc=invisible\nPrivateDevices=yes\nProcSubset=pid\
         working = working,
         exec = quote_exec_args(spec.exec_start),
         res_lines = res_lines,
+        ip_filter = IP_FILTER,
     );
     Ok(content)
 }
@@ -308,11 +308,19 @@ fn query_state(service: &str) -> Option<String> {
 /// service was still `activating`.
 pub fn wait_until_active(service: &str) -> StartOutcome {
     let deadline = Instant::now() + START_BUDGET;
+    // `systemctl start --no-block` only enqueues the start job; on a loaded
+    // manager the very first is-active poll can run before the job does, and
+    // a healthy unit still reads as inactive then. A genuine refusal (exec
+    // failure, bad unit) reaches `failed`/`inactive` within a poll interval,
+    // so only conclude Failure after the async job has had room to run.
+    let verdict = Instant::now() + wait_grace();
     loop {
         match query_state(service).as_deref() {
             None => return StartOutcome::SystemdUnavailable,
             Some("active") => return StartOutcome::Active,
-            Some("failed" | "inactive") => return StartOutcome::Failed,
+            Some("failed" | "inactive") if Instant::now() >= verdict => {
+                return StartOutcome::Failed;
+            }
             Some(_) => {} // activating / reloading / unknown-transient
         }
         if Instant::now() >= deadline {
@@ -320,6 +328,12 @@ pub fn wait_until_active(service: &str) -> StartOutcome {
         }
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+/// Give the queued `--no-block` start job time to actually run before the
+/// first fatal verdict. Two poll rounds plus slack for a busy manager.
+fn wait_grace() -> Duration {
+    POLL_INTERVAL * 3
 }
 
 /// Recent journal lines for a user unit.
@@ -400,7 +414,6 @@ mod tests {
             description: "demo",
             env_file: None,
             extra_env: &[],
-            loopback_only: true,
             res: ResourceLimits {
                 memory_high: Some("256M"),
                 memory_max: Some("384M"),
@@ -430,6 +443,8 @@ mod tests {
             "ProcSubset=pid\n",
             "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n",
             "SystemCallFilter=~@mount @swap @reboot @cpu-emulation @obsolete @module @raw-io @clock\n",
+            "IPAddressDeny=any\n",
+            "IPAddressAllow=127.0.0.1 ::1\n",
         ] {
             assert!(content.contains(needle), "missing {needle:?}");
         }

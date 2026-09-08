@@ -140,59 +140,39 @@ pub struct CmdResult {
 }
 
 /// Whether the hardened isolation is actually in effect for build steps.
-/// The user may disable it explicitly (`GHOSTPROVIDER_NO_SANDBOX=1`), and
-/// `systemd-run` may be missing at runtime — both must surface as a warning,
-/// never silently reduce protection.
+/// The sandbox is mandatory — the only recognized non-`Full` state is a
+/// missing `systemd-run`, which surfaces as a warning (and, on the deploy
+/// path, a hard rejection) rather than a silent reduction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffectiveSandbox {
     Full,
-    DisabledByEnv,
     FallbackPlain,
 }
 
-fn sandbox_enabled() -> bool {
-    !crate::flags::env_flag("GHOSTPROVIDER_NO_SANDBOX")
-}
-
 pub fn effective_mode() -> EffectiveSandbox {
-    if !sandbox_enabled() {
-        EffectiveSandbox::DisabledByEnv
-    } else if which("systemd-run") {
+    if which("systemd-run") {
         EffectiveSandbox::Full
     } else {
         EffectiveSandbox::FallbackPlain
     }
 }
 
-/// Security invariant for a deploy: a build must run in the hardened sandbox
-/// UNLESS the user explicitly opted out with `GHOSTPROVIDER_NO_SANDBOX=1`.
-/// Every other silent reduction — `systemd-run` missing, or a build user
+/// A deploy's security invariant: the sandbox is mandatory and there is no
+/// opt-out. Any silent reduction — `systemd-run` missing, or a build user
 /// requested but unusable from this process — is a hard error so a deploy can
 /// never quietly degrade to a plain host process. `None` means the deploy may
 /// proceed. Callers surface this as a rejection, not a warning.
 pub fn sandbox_blocked_reason() -> Option<&'static str> {
-    if !sandbox_enabled() {
-        return None; // explicit opt-out; the INSECURE marker is written instead.
-    }
     if !which("systemd-run") {
         return Some(
             "build sandbox unavailable (systemd-run not found) — refusing to build \
-             without isolation; set GHOSTPROVIDER_NO_SANDBOX=1 only if you accept \
-             running builds as plain unisolated host processes",
+             without isolation (the sandbox is mandatory)",
         );
     }
     if let Some(reason) = build_user_unusable_reason() {
         return Some(reason);
     }
     None
-}
-
-/// Whether the deploy just completed ran its build unisolated (only reachable
-/// via the explicit `GHOSTPROVIDER_NO_SANDBOX` opt-out, because anything else
-/// is blocked before a build starts). Recorded in `state.json` so the INSECURE
-/// condition is auditable after the fact, not only printed in the moment.
-pub fn build_was_insecure() -> bool {
-    !sandbox_enabled()
 }
 
 /// Env var naming the dedicated unprivileged build user (e.g. `ghostbuild`).
@@ -274,11 +254,6 @@ fn group_gid(name: &str) -> Option<u32> {
 pub fn sandbox_warning() -> Option<&'static str> {
     match effective_mode() {
         EffectiveSandbox::Full => {}
-        EffectiveSandbox::DisabledByEnv => {
-            return Some(
-                "sandbox DISABLED by GHOSTPROVIDER_NO_SANDBOX — builds run with no isolation",
-            );
-        }
         EffectiveSandbox::FallbackPlain => {
             return Some("systemd-run not found — builds run with no isolation");
         }
@@ -389,9 +364,9 @@ fn with_build_user_prefix(argv: &[String]) -> Vec<String> {
     }
 }
 
-/// Run `argv` inside the hardened sandbox. The sandbox is mandatory: the only
-/// permitted unisolated execution is the explicit `GHOSTPROVIDER_NO_SANDBOX`
-/// opt-out; a missing/failed `systemd-run` is a hard error, never a fallback.
+/// Run `argv` inside the hardened sandbox. The sandbox is mandatory and has
+/// no opt-out: a missing/failed `systemd-run` is a hard error, never a
+/// fallback to plain execution.
 pub fn run_sandboxed(
     argv: &[String],
     cwd: &Path,
@@ -425,19 +400,12 @@ pub fn run_sandboxed(
     run_env.insert("GOTOOLCHAIN".to_string(), "auto".into());
     precreate_cache_dirs(cwd, &cache);
 
-    // The ONLY path that may run a build as a plain host process is the
-    // explicit GHOSTPROVIDER_NO_SANDBOX opt-out. A missing systemd-run is a
-    // hard failure (see sandbox_blocked_reason): builds must not silently
-    // degrade to no isolation.
-    if !sandbox_enabled() {
-        let argv = with_build_user_prefix(argv);
-        return run_plain(&argv, cwd, &run_env, timeout);
-    }
+    // A build runs ONLY inside the hardened sandbox; a missing systemd-run is
+    // a hard failure (see sandbox_blocked_reason), never a fallback.
     if !which("systemd-run") {
         anyhow::bail!(
             "build sandbox unavailable (systemd-run not found) — refusing to build \
-             without isolation; set GHOSTPROVIDER_NO_SANDBOX=1 only if you accept \
-             running builds as plain unisolated host processes"
+             without isolation (the sandbox is mandatory)"
         );
     }
 
@@ -508,9 +476,8 @@ pub fn run_sandboxed(
                     .join("\n");
                 anyhow::bail!(
                     "build sandbox unavailable (systemd-run could not start the unit; \
-                     no user manager / D-Bus?) — refusing to build without isolation; \
-                     set GHOSTPROVIDER_NO_SANDBOX=1 only if you accept running builds \
-                     as plain unisolated host processes\nsystemd-run: {tail}"
+                     no user manager / D-Bus?) — refusing to build without isolation \
+                     (the sandbox is mandatory)\nsystemd-run: {tail}"
                 );
             }
             let stderr = strip_status_preamble(&stderr);
@@ -530,8 +497,7 @@ pub fn run_sandboxed(
         Err(e) if e.is::<TimedOut>() => Err(e),
         Err(e) => Err(e).with_context(|| {
             "build sandbox unavailable (systemd-run launch failed) — refusing to \
-             build without isolation; set GHOSTPROVIDER_NO_SANDBOX=1 only if you \
-             accept running builds as plain unisolated host processes"
+             build without isolation (the sandbox is mandatory)"
         }),
     }
 }
@@ -631,20 +597,6 @@ fn run_cmd_timed(
             }
         }
     }
-}
-
-fn run_plain(
-    argv: &[String],
-    cwd: &Path,
-    env: &BTreeMap<String, String>,
-    timeout: Duration,
-) -> anyhow::Result<CmdResult> {
-    let (status, out, err) = run_cmd_timed(argv, cwd, env, timeout)?;
-    Ok(CmdResult {
-        success: status.map(|s| s.success()).unwrap_or(false),
-        stdout: out,
-        stderr: err,
-    })
 }
 
 fn which(bin: &str) -> bool {

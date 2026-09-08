@@ -1,6 +1,7 @@
 //! Deployment engine: curated recipes → hardened systemd user services.
 
 pub mod deploy;
+pub mod egress;
 pub mod gitclone;
 pub mod github;
 pub mod goenv;

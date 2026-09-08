@@ -1,9 +1,8 @@
 //! Truthy boolean environment-flag parsing.
 //!
-//! Both opt-out flags — `GHOSTPROVIDER_NO_SANDBOX` and
-//! `GHOSTPROVIDER_NO_NETLOG` — accept the same set of values so a user who
-//! learned one flag's syntax never trips on the other. Values are matched
-//! case-insensitively.
+//! The remaining opt-out flag (`GHOSTPROVIDER_NO_NETLOG`) accepts a small set
+//! of truthy values, matched case-insensitively. The build sandbox has no
+//! opt-out — see `hoster::sandbox`.
 
 /// True when `name` is set to `1`, `true`, `yes` or `on`.
 pub fn env_flag(name: &str) -> bool {

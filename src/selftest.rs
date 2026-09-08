@@ -13,6 +13,12 @@ use crate::hoster::port::find_free_port;
 use crate::hoster::units::{self, StartOutcome, UnitSpec};
 
 pub fn run() -> anyhow::Result<()> {
+    // Host capability first: the runtime no-egress guarantee hangs on the IP
+    // filter being enforceable here (needs eBPF on the kernel). Report the
+    // verdict before any service touching state is started.
+    let egress = crate::hoster::egress::verify_runtime_egress();
+    println!("{}", egress.label());
+
     let root = std::env::temp_dir().join("gp-selftest-site");
     std::fs::create_dir_all(&root)?;
     std::fs::write(
@@ -35,7 +41,6 @@ pub fn run() -> anyhow::Result<()> {
         description: "demo-ghostprovider self-test",
         env_file: None,
         extra_env: &[],
-        loopback_only: true,
         res: crate::hoster::units::ResourceLimits::none(),
     };
     units::create_unit(&spec).context("unit creation")?;
