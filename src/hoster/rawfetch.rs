@@ -506,7 +506,7 @@ pub(crate) fn materialize(url: &str, dest: &Path, pin: Option<&str>) -> anyhow::
     };
     let files = collect_files(&owner, &repo, &refname)?;
     eprintln!(
-        "raw: {} files, {} MiB, ref {}",
+        "source: {} files, {} MiB, ref {}",
         files.len(),
         files.iter().map(|(_, s)| *s).sum::<u64>() / (1024 * 1024),
         refname

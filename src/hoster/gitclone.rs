@@ -232,11 +232,11 @@ pub fn clone(url: &str, dest: &Path, pin: Option<&str>) -> CloneStatus {
         Ok(()) => {
             return CloneStatus {
                 ok: true,
-                last_message: "raw tree download complete".into(),
+                last_message: "source tree download complete".into(),
             };
         }
         Err(e) => {
-            eprintln!("raw tree download failed: {}", short(&format!("{e:#}")));
+            eprintln!("source tree download failed: {}", short(&format!("{e:#}")));
             let _ = force_remove_all(dest);
             if pin.is_some() {
                 return CloneStatus {
