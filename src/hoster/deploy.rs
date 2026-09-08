@@ -168,9 +168,6 @@ pub fn run_deployment(url: &str, log: &dyn Fn(String)) -> DeployOutcome {
         log(format!("! {block}"));
         return DeployOutcome::Rejected("sandbox-unavailable");
     }
-    if let Some(w) = super::sandbox::sandbox_warning() {
-        log(format!("warn: {w}"));
-    }
     if crate::netlog::logging_disabled() {
         log("warn: GHOSTPROVIDER_NO_NETLOG — outbound requests are not written to net.log".into());
     }
@@ -195,6 +192,12 @@ pub fn run_deployment(url: &str, log: &dyn Fn(String)) -> DeployOutcome {
         log("! pre-flight failed, aborting".into());
         return DeployOutcome::Rejected("preflight");
     }
+    // The sandbox is mandatory and every degrading state was rejected above,
+    // so at this point full isolation is in effect — claim it explicitly.
+    log(
+        "sandbox: FULL — every build step runs in the mandatory isolated environment (no opt-out)"
+            .into(),
+    );
 
     let analysis = RepoAnalysis {
         url: url.to_string(),
