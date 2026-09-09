@@ -15,7 +15,7 @@ Private, local, no third parties.
 
 - SystemD (user-level)
 - Git
-- Linux (tested on Arch, Ubuntu, Fedora)
+- Linux
 
 ## Tech Stack
 
@@ -37,13 +37,13 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
 
 Here is the security module that Ghost Provider uses, this is the necessary architecture for the secure operation of the software.
 
-- **All data stays local**
+- **All data stays local** — every request goes through an HTTPS client locked to a compile-time host allowlist, is recorded in net.log, and credentials never leave api.github.com. Nothing is sent to third parties.
 
-- **No root required**
+- **No root required** — services run as ordinary systemd user units; no sudo, no elevated privileges, nothing installed system-wide.
 
-- **Explicit confirmation before deploy**
+- **Explicit confirmation before deploy** — a deploy only starts after you explicitly confirm it; nothing is built or installed on its own.
 
-- **Sandbox**
+- **Sandbox** — builds run in a mandatory isolated environment (sandboxed home, locked-down network, resource caps). A deploy proceeds only when the sandbox verifies as FULL.
 
 ## System Scan
 
