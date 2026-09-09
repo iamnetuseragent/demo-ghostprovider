@@ -159,8 +159,8 @@ pub enum DeployOutcome {
 
 /// Lines that earn a spot in the (deliberately laconic) deploy output:
 /// verification and warning lines plus the final reachable URL. Pure progress
-/// chatter — pre-flight, source summary, build steps, unit install, egress
-/// probe, service start — is dropped; the final verdict line is what matters.
+/// chatter — pre-flight, source summary, build steps, unit install, service
+/// start — is dropped; the final verdict line is what matters.
 fn screen_line(line: &str) -> bool {
     let t = line.trim_start();
     t.starts_with('!')
@@ -484,19 +484,6 @@ pub fn deploy_service(
         return result;
     }
 
-    // The unit is rendered with IPAddressDeny=any + loopback-only allow, but
-    // that filter needs the kernel's eBPF and silently reverts to decoration
-    // on hosts where unprivileged BPF is locked out (Ubuntu default). Probe
-    // and report the real verdict — never assume the directive is enforced.
-    emit("probing runtime egress...");
-    match super::egress::verify_runtime_egress() {
-        super::egress::EgressVerdict::Enforced => {}
-        v => {
-            let text = format!("warn: {}", v.label());
-            emit(&text);
-        }
-    }
-
     // ── start + verify (polling; see units.rs / FINDINGS.md) ──
     // A non-zero exit from `systemctl --user start` means the unit/job was
     // rejected outright (bad unit, dead user manager), not merely slow to
@@ -719,7 +706,6 @@ mod tests {
     fn screen_line_keeps_verdicts_and_warnings_only() {
         let kept = [
             "! pre-flight failed, aborting",
-            "warn: runtime egress: OPEN — this host cannot enforce the unit IP filter",
             "sandbox: FULL",
             "! sandbox: ALMOST — GHOSTPROVIDER_BUILD_USER set but unusable; refusing to deploy without full isolation",
             "! sandbox: NO — refusing to build without isolation (the sandbox is mandatory)",
