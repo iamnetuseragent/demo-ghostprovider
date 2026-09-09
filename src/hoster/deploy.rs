@@ -295,6 +295,7 @@ pub fn deploy_service(
                     recipe.commit
                 ),
             );
+            rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
             return result;
         }
         None => {
@@ -305,6 +306,7 @@ pub fn deploy_service(
                     recipe.commit
                 ),
             );
+            rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
             return result;
         }
     }
@@ -325,6 +327,7 @@ pub fn deploy_service(
     }
     if !blockers.is_empty() {
         emit("! fix the tools above, then re-run the deployment");
+        rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
         return result;
     }
 
@@ -344,6 +347,7 @@ pub fn deploy_service(
                     "Prefetch step failed ({resolved}): {e}\nThe build sandbox has PrivateNetwork=yes, so dependencies must be pre-fetched on the host; fix the fetch, then re-deploy."
                 ),
             );
+            rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
             return result;
         }
     }
@@ -364,6 +368,7 @@ pub fn deploy_service(
                         "Pinned paraglide plugin seed failed: {e:#}\nThe build sandbox has PrivateNetwork=yes; the plugins must be fetched and verified on the host. Refusing to build against unverified plugin bytes."
                     ),
                 );
+                rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
                 return result;
             }
         }
@@ -386,6 +391,7 @@ pub fn deploy_service(
                         "Go toolchain seed failed: {e:#}\nThe build sandbox has PrivateNetwork=yes; the toolchain must be pre-seeded on the host."
                     ),
                 );
+                rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
                 return result;
             }
         }
@@ -409,6 +415,7 @@ pub fn deploy_service(
                         "Go module cache seed failed: {e}\nThe build sandbox has PrivateNetwork=yes; modules must be fully pre-seeded on the host."
                     ),
                 );
+                rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
                 return result;
             }
         }
@@ -432,10 +439,12 @@ pub fn deploy_service(
                         tail(&r.stdout),
                     ),
                 );
+                rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
                 return result;
             }
             Err(e) => {
                 report_err(&mut result, format!("Build step failed ({resolved}): {e}"));
+                rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
                 return result;
             }
         }
@@ -450,11 +459,13 @@ pub fn deploy_service(
         Ok(p) => p,
         Err(e) => {
             report_err(&mut result, e.to_string());
+            rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
             return result;
         }
     };
     if recipe.searxng && let Err(e) = prepare_searxng_config(&project_dir, port) {
         report_err(&mut result, format!("searxng config failed: {e}"));
+        rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
         return result;
     }
     let exec_start = resolve_start(recipe, &project_dir, port);
@@ -481,6 +492,7 @@ pub fn deploy_service(
     };
     if let Err(e) = create_unit(&spec) {
         report_err(&mut result, format!("unit creation failed: {e:#}"));
+        rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
         return result;
     }
 
@@ -506,12 +518,12 @@ pub fn deploy_service(
                     recipe.service_name
                 ),
             );
-            cleanup_failed(&mut result, recipe.service_name);
+            rollback_failed(&mut result, recipe.service_name, &project_dir, Some(port), &emit);
             return result;
         }
         Err(_) => {
             report_err(&mut result, "failed to invoke systemctl start".into());
-            cleanup_failed(&mut result, recipe.service_name);
+            rollback_failed(&mut result, recipe.service_name, &project_dir, Some(port), &emit);
             return result;
         }
     }
@@ -524,7 +536,7 @@ pub fn deploy_service(
                 &mut result,
                 format!("Service crashed immediately after start:\n{}", short(&logs)),
             );
-            cleanup_failed(&mut result, recipe.service_name);
+            rollback_failed(&mut result, recipe.service_name, &project_dir, Some(port), &emit);
             return result;
         }
         StartOutcome::TimeoutWhileActivating => {
@@ -537,11 +549,12 @@ pub fn deploy_service(
                     short(&logs)
                 ),
             );
-            cleanup_failed(&mut result, recipe.service_name);
+            rollback_failed(&mut result, recipe.service_name, &project_dir, Some(port), &emit);
             return result;
         }
         StartOutcome::SystemdUnavailable => {
             report_err(&mut result, "systemd user manager unavailable".into());
+            rollback_failed(&mut result, recipe.service_name, &project_dir, Some(port), &emit);
             return result;
         }
     }
@@ -601,13 +614,37 @@ fn listens_non_loopback(port: u16) -> bool {
         .any(|p| p.port == port && address_is_non_loopback(&p.address))
 }
 
-fn cleanup_failed(result: &mut HostResult, service: &str) {
-    for name in &result.service_names.clone() {
+/// Roll a failed deploy back completely — the README's "clean removal"
+/// promise applied to a failed attempt, not just to an explicit delete: stop
+/// and remove any unit and env file created so far, wipe the cloned project
+/// tree (with its build caches) so nothing is left behind, and wait for the
+/// chosen port to be reusable again.
+fn rollback_failed(
+    result: &mut HostResult,
+    service: &str,
+    project_dir: &Path,
+    port: Option<u16>,
+    emit: &dyn Fn(&str),
+) {
+    let mut names = result.service_names.clone();
+    if !names.iter().any(|n| n == service) {
+        names.push(service.to_string());
+    }
+    for name in &names {
         remove_unit(name);
         super::secrets::remove_env_file(name);
     }
-    remove_unit(service);
-    super::secrets::remove_env_file(service);
+    if !wipe_project_dir(&project_dir.to_string_lossy()) {
+        let msg = format!(
+            "cleanup: could not remove the project tree left behind by this failed deploy: {}",
+            project_dir.display()
+        );
+        result.errors.push(msg.clone());
+        emit(&format!("! {msg}"));
+    }
+    if let Some(port) = port {
+        wait_port_released(port, std::time::Duration::from_secs(3));
+    }
     let _ = Command::new("systemctl")
         .args(["--user", "daemon-reload"])
         .status();
@@ -780,6 +817,53 @@ mod tests {
 
         // A bare services_dir itself is not a project clone either.
         assert!(!wipe_project_dir(tmp.to_string_lossy().as_ref()));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// README promise extended to failed deploys: when a deployment fails the
+    /// rollback wipes the project tree (caches included), leaves no unit, and
+    /// keeps the original error — nothing of the failed attempt is left behind.
+    #[test]
+    #[allow(unsafe_code)] // test-only env mutation (XDG_DATA_HOME)
+    fn rollback_failed_wipes_project_tree_on_failed_deploy() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "dgp-rollback-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", &tmp);
+        }
+
+        let project = crate::paths::services_dir().join("memos");
+        std::fs::create_dir_all(project.join(".ghost-cache/npm")).unwrap();
+        std::fs::write(project.join("file.txt"), "clone").unwrap();
+
+        let mut result = HostResult {
+            errors: vec!["Build step failed".into()],
+            ..Default::default()
+        };
+        let notes = std::cell::RefCell::new(Vec::new());
+        rollback_failed(
+            &mut result,
+            "demo-memos",
+            &project,
+            None,
+            &|m| notes.borrow_mut().push(m.to_string()),
+        );
+
+        assert!(!project.exists(), "failed deploy must wipe the project tree");
+        assert_eq!(
+            result.errors,
+            vec!["Build step failed".to_string()],
+            "rollback must not swallow the original error"
+        );
+        assert!(notes.borrow().is_empty(), "no cleanup warnings on success");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
