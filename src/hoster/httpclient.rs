@@ -36,6 +36,14 @@ const SLOW_TIMEOUT: Duration = Duration::from_secs(60 * 90);
 /// a socket that stopped moving data entirely aborts after one idle window
 /// instead of hanging for [`SLOW_TIMEOUT`].
 const SLOW_BODY_IDLE: Duration = Duration::from_secs(45);
+/// [`fetch`]'s transport retries stop the moment response headers arrive; a
+/// stall *during* the body read (the [`SLOW_BODY_IDLE`] idle timeout) or an
+/// error status beats them with nothing left to retry. Big bodies — toolchains,
+/// wasm shards, tarballs — are exactly where such a mid-body stall hurts most,
+/// so those fetches re-request the whole body a couple of times over a fresh
+/// connection before failing. The backoff base, in ms, doubles per attempt.
+const SLOW_BODY_RETRIES: u32 = 2;
+const SLOW_BODY_RETRY_BASE_MS: u64 = 1_000;
 
 fn scheme_of(url: &str) -> Option<&str> {
     url.split_once("://").map(|(s, _)| s)
@@ -421,19 +429,69 @@ pub fn get_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
     }
 }
 
+/// One complete body-fetch attempt: the HTTP status plus the fully-read body.
+struct FetchOut {
+    status: u16,
+    body: Vec<u8>,
+}
+
+/// Bounded-retry core shared by the slow body paths. `attempt` yields one
+/// whole body fetch (transport *and* body-read phase both count); any error
+/// or non-2xx status is retried up to [`SLOW_BODY_RETRIES`] more times with a
+/// doubling backoff over a fresh request, then the last error surfaces.
+fn fetch_slow_bytes_with(
+    mut attempt: impl FnMut(&str, Option<(u64, u64)>) -> anyhow::Result<FetchOut>,
+    url: &str,
+    ranged: Option<(u64, u64)>,
+) -> anyhow::Result<Vec<u8>> {
+    let mut delay_ms = SLOW_BODY_RETRY_BASE_MS;
+    for attempt_no in 0..=SLOW_BODY_RETRIES {
+        let outcome = attempt(url, ranged).and_then(|out| match out.status {
+            200..=299 => Ok(out.body),
+            code => Err(anyhow!("HTTP {code} from {url}")),
+        });
+        match outcome {
+            Ok(body) => return Ok(body),
+            Err(_) if attempt_no < SLOW_BODY_RETRIES => {
+                std::thread::sleep(Duration::from_millis(delay_ms));
+                delay_ms <<= 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("SLOW_BODY_RETRIES bounds the loop")
+}
+
+/// Shared slow-path body fetch with bounded retry. The transport half of
+/// [`fetch`] retries only until response headers arrive; `body_ctx` names the
+/// body-read phase so a stall mid-body (the [`SLOW_BODY_IDLE`] idle timeout)
+/// or an error status is retried by [`fetch_slow_bytes_with`] as a whole
+/// fresh request.
+fn fetch_slow_bytes(
+    url: &str,
+    ranged: Option<(u64, u64)>,
+    body_ctx: &'static str,
+) -> anyhow::Result<Vec<u8>> {
+    fetch_slow_bytes_with(
+        |url, ranged| {
+            let res = fetch(url, SLOW_TIMEOUT, Some(SLOW_BODY_IDLE), ranged.is_some(), ranged)?;
+            let status = res.status().as_u16();
+            let body = res.into_body().read_to_vec().context(body_ctx)?;
+            Ok(FetchOut { status, body })
+        },
+        url,
+        ranged,
+    )
+}
+
 /// GET a large body (source tarball) over a slow-but-alive link. The global
 /// budget is [`SLOW_TIMEOUT`] and a single idle read may take up to
 /// [`SLOW_BODY_IDLE`] — so a rate-limited transfer slowly crawling along is
 /// allowed to finish, while a socket that truly stopped moving data aborts in
-/// one idle window instead of hanging for the whole budget.
+/// one idle window instead of hanging for the whole budget. Mid-body stalls
+/// and error statuses are retried via [`fetch_slow_bytes`].
 pub fn get_bytes_slow(url: &str) -> anyhow::Result<Vec<u8>> {
-    let res = fetch(url, SLOW_TIMEOUT, Some(SLOW_BODY_IDLE), false, None)?;
-    let status = res.status().as_u16();
-    let body = res.into_body().read_to_vec().context("reading slow body")?;
-    match status {
-        200..=299 => Ok(body),
-        code => Err(anyhow!("HTTP {code} from {url}")),
-    }
+    fetch_slow_bytes(url, None, "reading slow body")
 }
 
 /// GET a byte range (`start..=end`, inclusive) of a large body over a
@@ -442,18 +500,10 @@ pub fn get_bytes_slow(url: &str) -> anyhow::Result<Vec<u8>> {
 /// The request carries a `Range` header and returns exactly the requested
 /// span; if the server ignores Range (HTTP 200 full body), the caller's
 /// length check catches it and treats the fetch as failed. Same budgets and
-/// hop-by-hop allowlist gating as [`get_bytes_slow`].
+/// hop-by-hop allowlist gating as [`get_bytes_slow`], including the bounded
+/// retry of mid-body stalls and error statuses via [`fetch_slow_bytes`].
 pub fn get_bytes_range(url: &str, start: u64, end: u64) -> anyhow::Result<Vec<u8>> {
-    let res = fetch(url, SLOW_TIMEOUT, Some(SLOW_BODY_IDLE), true, Some((start, end)))?;
-    let status = res.status().as_u16();
-    let body = res
-        .into_body()
-        .read_to_vec()
-        .context("reading ranged body")?;
-    match status {
-        200..=299 => Ok(body),
-        code => Err(anyhow!("HTTP {code} from {url}")),
-    }
+    fetch_slow_bytes(url, Some((start, end)), "reading ranged body")
 }
 
 /// Probe an allowlisted host with an almost-bodyless HEAD request. Used by
@@ -748,5 +798,64 @@ mod tests {
         assert!(github_token_for("https://github.com/x").is_none());
         assert!(github_token_for("https://raw.githubusercontent.com/x/y").is_none());
         unsafe { std::env::remove_var("GITHUB_TOKEN") };
+    }
+
+    #[test]
+    fn slow_body_retries_transient_stall_then_succeeds() {
+        let url = "https://raw.githubusercontent.com/x/y/main/f";
+        let mut attempts = 0;
+        let body = fetch_slow_bytes_with(
+            |_url, _ranged| {
+                attempts += 1;
+                if attempts <= 2 {
+                    Err(anyhow!("downloading f seg 11: reading ranged body: timeout: receive body"))
+                } else {
+                    Ok(FetchOut { status: 200, body: b"ok".to_vec() })
+                }
+            },
+            url,
+            None,
+        )
+        .unwrap();
+        assert_eq!(body, b"ok");
+        assert_eq!(attempts, 3, "two stalls then a green attempt must win");
+    }
+
+    #[test]
+    fn slow_body_retry_exhausts_and_reports_last_error() {
+        let url = "https://raw.githubusercontent.com/x/y/main/f";
+        let mut attempts = 0;
+        let err = fetch_slow_bytes_with(
+            |_url, _ranged| {
+                attempts += 1;
+                Err(anyhow!("downloading f seg 11: reading ranged body: timeout: receive body"))
+            },
+            url,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(attempts, 3, "SLOW_BODY_RETRIES + first attempt in total");
+        assert!(err.to_string().contains("reading ranged body"), "{err}");
+    }
+
+    #[test]
+    fn slow_body_retries_error_status_then_succeeds() {
+        let url = "https://raw.githubusercontent.com/x/y/main/f";
+        let mut attempts = 0;
+        let body = fetch_slow_bytes_with(
+            |_url, _ranged| {
+                attempts += 1;
+                if attempts == 1 {
+                    Ok(FetchOut { status: 502, body: vec![] })
+                } else {
+                    Ok(FetchOut { status: 200, body: b"ok".to_vec() })
+                }
+            },
+            url,
+            None,
+        )
+        .unwrap();
+        assert_eq!(body, b"ok");
+        assert_eq!(attempts, 2, "a 5xx burst is retried on a fresh request");
     }
 }
