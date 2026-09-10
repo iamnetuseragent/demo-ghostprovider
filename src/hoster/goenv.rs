@@ -15,7 +15,12 @@
 //!
 //! Trust stays with `go`: the seeded bytes are re-verified against Go's
 //! checksum database (`sum.golang.org`) before they are extracted and run.
-//! This path only saves bytes, it never trusts them. Network surface added:
+//! This path only saves bytes, it never trusts them. The lone exception is
+//! the toolchain zip itself, which is not in any go.sum: it is fetched from
+//! `proxy.golang.org` over the allowlisted TLS client and used without a
+//! sumdb round-trip (`GONOSUMDB=golang.org/toolchain`) because the build
+//! sandbox has PrivateNetwork=yes and could not verify it anyway.
+//! Network surface added:
 //! `proxy.golang.org` (module metadata + zip) and `storage.googleapis.com`
 //! (its signed-URL redirect), both gated per hop by `ALLOWED_ENDPOINTS` and
 //! net.log-recorded like every other request (see `netlog.rs`).
@@ -86,6 +91,14 @@ pub fn go_toolchain_env(project_dir: &Path) -> anyhow::Result<Vec<(String, Strin
     Ok(vec![
         ("GOPROXY".to_string(), format!("file://{proxy}", proxy = base.display())),
         ("GOTOOLCHAIN".to_string(), "auto".to_string()),
+        // The toolchain module is the one thing NOT pinned in the project's
+        // go.sum, so a fresh `go build` would verify it against sum.golang.org
+        // before using it — and the build sandbox has PrivateNetwork=yes.
+        // We already fetched the zip from proxy.golang.org over the allowlisted
+        // TLS client; skip the sumdb round-trip for exactly this module path.
+        // Everything the project actually imports IS pinned in go.sum, so the
+        // checksum database keeps doing its job for those.
+        ("GONOSUMDB".to_string(), "golang.org/toolchain".to_string()),
     ])
 }
 
@@ -509,9 +522,13 @@ mod tests {
         std::fs::write(p.join("go.mod"), "module probe.example\n\ngo 1.27.0\n").unwrap();
 
         let env = go_toolchain_env(&p).unwrap();
-        assert!(env.len() == 2, "expected GOPROXY + GOTOOLCHAIN, got {env:?}");
+        assert_eq!(env.len(), 3, "expected GOPROXY + GOTOOLCHAIN + GONOSUMDB, got {env:?}");
         assert!(env[0].0 == "GOPROXY" && env[0].1.starts_with("file://"));
         assert!(env[1] == ("GOTOOLCHAIN".to_string(), "auto".to_string()));
+        assert!(
+            env[2] == ("GONOSUMDB".to_string(), "golang.org/toolchain".to_string()),
+            "the toolchain must skip the offline-unreachable sumdb: {env:?}"
+        );
 
         let vdir = p.join(".ghost-cache/go-fileproxy/golang.org/toolchain/@v");
         let tag = "v0.0.1-go1.27.0.linux-amd64";
