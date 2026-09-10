@@ -169,7 +169,11 @@ pub const DEMO_SERVICES: &[DemoRecipe] = &[
             "pnpm --dir web release",
             "go build -o ghost-server ./cmd/memos",
         ],
-        start_cmd: "{bin} --port {port}",
+        // --addr 127.0.0.1 is mandatory: Memos' default bind (empty --addr) is
+        // the wildcard `:port`, which would put the service on the LAN/VPN.
+        // Loopback keeps the announced `http://localhost:PORT` honest and
+        // matches the egress model (units.rs: IPAddressAllow=127.0.0.1 ::1).
+        start_cmd: "{bin} --addr 127.0.0.1 --port {port}",
         port: 0,
         searxng: false,
         plugins: &[],
@@ -195,6 +199,7 @@ pub fn find_recipe(owner: &str, name: &str) -> Option<&'static DemoRecipe> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn catalog_has_three_services() {
@@ -258,6 +263,44 @@ mod tests {
         }
     }
 
+    /// Every catalog service must end up bound to loopback only: an announced
+    /// `http://localhost:PORT` while the port is reachable from the LAN is a
+    /// real leak (Memos' default --addr is the wildcard `:port`). This guards
+    /// against a recipe change silently re-exposing a service on every
+    /// interface; `deploy.rs` additionally warns live via `ss` if a change
+    /// slips through.
+    #[test]
+    fn every_service_binds_loopback_only() {
+        for r in DEMO_SERVICES {
+            match r.service_name {
+                // Serve: our static server hard-binds Ipv4Addr::LOCALHOST.
+                "demo-vert" => assert!(
+                    r.start_cmd.contains("__serve-static"),
+                    "demo-vert must be served by our loopback static server, got: {}",
+                    r.start_cmd
+                ),
+                // SearXNG: deploy.rs patches bind_address to 127.0.0.1.
+                "demo-searxng" => assert_eq!(r.start_cmd, "{venv} -m searx.webapp"),
+                // Memos: --addr 127.0.0.1 is mandatory (default is wildcard).
+                "demo-memos" => assert!(
+                    r.start_cmd.contains("--addr 127.0.0.1"),
+                    "demo-memos must bind loopback explicitly, got: {}",
+                    r.start_cmd
+                ),
+                other => panic!("unexpected service {} in catalog", other),
+            }
+        }
+    }
+
+    /// resolve_start must preserve the loopback pin through placeholder
+    /// expansion, so the deployed unit actually binds 127.0.0.1.
+    #[test]
+    fn memos_resolve_start_keeps_loopback_after_expansion() {
+        let recipe = find_recipe("usememos", "memos").unwrap();
+        let resolved = super::super::deploy::resolve_start(recipe, Path::new("/srv/memos"), 12345);
+        assert!(resolved.contains("--addr 127.0.0.1"), "got: {resolved}");
+        assert!(resolved.contains("--port 12345"), "got: {resolved}");
+    }
     /// Prefetch steps are downloaders, never executed in the sandbox; every
     /// one of them references a tool the recipe declares.
     #[test]
