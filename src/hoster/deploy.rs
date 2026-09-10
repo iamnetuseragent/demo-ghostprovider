@@ -559,16 +559,17 @@ pub fn deploy_service(
         }
     }
 
-    // Some apps bind every interface by default (Memos: `--port N` binds the
-    // wildcard). VERT loops back via our server and SearXNG is patched to
-    // 127.0.0.1, but for anything that ignores that, the exposure must be a
-    // loud warn: — an announced "localhost URL" while the port is reachable
-    // from the LAN is a real leak that no silent default can excuse.
+    // Every catalog service binds loopback: VERT's unit runs our static
+    // server (`serve.rs` binds Ipv4Addr::LOCALHOST), SearXNG's settings.yml is
+    // patched to 127.0.0.1 above, and Memos is started with
+    // `--addr 127.0.0.1`. This check is the last line of defence for a recipe
+    // change that regresses that: a loud warn: must appear, never a silent
+    // "localhost URL" while the port is reachable from the LAN.
     if listens_non_loopback(port) {
         emit(&format!(
             "warn: {} is listening on a non-loopback address (port {port}) — \
-             anything on your network can reach it. This is the app's own bind \
-             behaviour; block it with a firewall or bind it to 127.0.0.1.",
+             anything on your network can reach it. This recipe regression must \
+             be fixed: bind the app to 127.0.0.1 like the other services.",
             recipe.service_name
         ));
     }
