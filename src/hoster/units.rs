@@ -9,7 +9,7 @@
 //! * A slow service stays `activating` well past 5s, so a single late check
 //!   produced false "crashed" reports.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -165,15 +165,20 @@ pub fn create_unit(spec: &UnitSpec) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Invoker-home subpaths a compromised service must never be able to read:
-/// ssh keys, token stores, and the panel's own state/config. These never
-/// overlap a per-service working dir, so blanking them is safe; we keep
-/// `ProtectHome=read-only` instead of `ProtectHome=tmpfs` because the units
-/// execute binaries that live under $HOME (panel, built artifacts) and a
-/// tmpfs home would hide those too.
+/// Invoker-side paths a compromised runtime service must never be able to
+/// touch: secret stores plus the ambient *session sockets* (D-Bus, Wayland,
+/// X11, gpg-agent, the system bus). The unit's own `XDG_RUNTIME_DIR`/`HOME`
+/// are redirected under the project (see `render_unit`), so none of the real
+/// session roots below is needed at runtime — blanking them only costs the
+/// local attack surface, never a service feature.
+///
+/// `ProtectHome=read-only` stays instead of `ProtectHome=tmpfs` because the
+/// units execute binaries that live under $HOME (panel, built artifacts) and
+/// a tmpfs home would hide those too; the leak is the *read* path, which the
+/// per-root InaccessiblePaths below close without hiding the binaries.
 fn inaccessible_paths() -> String {
     let home = crate::paths::home();
-    [
+    let mut roots: Vec<PathBuf> = [
         ".ssh",
         ".config",
         ".gnupg",
@@ -181,15 +186,87 @@ fn inaccessible_paths() -> String {
         ".aws",
         ".cache",
         ".local/state/demo-ghostprovider",
+        // Secret-bearing home roots a service must never read either.
+        ".Xauthority",
+        ".git-credentials",
+        ".npmrc",
+        ".pypirc",
+        ".docker",
+        ".kube",
     ]
     .into_iter()
     .map(|p| home.join(p))
+    .collect();
+    // The user runtime dir carries the D-Bus session bus, Wayland sockets,
+    // gpg-agent, pulse/pipewire and at-spi sockets — the whole ambient
+    // session. The service's own runtime dir is redirected into the project,
+    // so masking `/run/user/<uid>` is safe and removes every guessed-path
+    // socket at once.
+    if let Some(uid) = current_uid() {
+        roots.push(PathBuf::from(format!("/run/user/{uid}")));
+    }
+    roots.push(PathBuf::from("/tmp/.X11-unix"));
+    roots.push(PathBuf::from("/run/dbus/system_bus_socket"));
     // systemd refuses to set up the namespace if a listed path does not
     // exist, so only the roots actually present are blanked.
-    .filter(|p| p.exists())
-    .map(|p| escape_unit_value(&p.to_string_lossy()))
-    .collect::<Vec<_>>()
-    .join(" ")
+    roots
+        .into_iter()
+        .filter(|p| p.exists())
+        .map(|p| escape_unit_value(&p.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Numeric UID of the invoking user (who the panel and every unit run as).
+fn current_uid() -> Option<u32> {
+    let out = Command::new("id").arg("-u").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+/// Common ambient credential variable names a runtime service must never
+/// inherit. `UnsetEnvironment=` (systemd 261) does NOT support glob patterns
+/// (verified live: `systemd-analyze verify` rejects `*TOKEN*`), so this is
+/// an explicit enumeration layered on top of the same names the build/prefetch
+/// scrub (`sandbox.rs::SCRUBBED_*`). It cannot be exhaustive — the real
+/// guarantee is that the ambient session (D-Bus/X11/Wayland sockets, the
+/// secret roots) is already unmounted via `InaccessiblePaths`; this list
+/// closes the *remote* credential egress channel on top of it.
+fn runtime_unset_environment() -> String {
+    let mut names: Vec<&str> = Vec::new();
+    names.extend(super::sandbox::SCRUBBED_ENV_VARS);
+    names.extend(super::sandbox::SCRUBBED_AMBIENT_VARS);
+    // Session/agent credentials and cloud/db keys with well-known names.
+    names.extend([
+        "OPENCHAMBER_AGENT_TOOL_TOKEN",
+        "OPENCHAMBER_TOKEN",
+        "OPENCHAMBER_SESSION_ID",
+    ]);
+    names.extend([
+        "OPENCODE_SERVER_PASSWORD",
+        "OPENCODE_TOKEN",
+        "OPENCODE_AUTH_TOKEN",
+    ]);
+    names.extend([
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
+        "AZURE_TENANT_ID",
+        "DATABASE_URL",
+        "MYSQL_PWD",
+        "PGPASSWORD",
+        "REDIS_URL",
+        "REDIS_PASSWORD",
+    ]);
+    let mut seen = std::collections::BTreeSet::new();
+    names.retain(|n| seen.insert(n.to_string()));
+    names.join(" ")
 }
 
 fn render_unit(spec: &UnitSpec) -> anyhow::Result<String> {
@@ -265,8 +342,9 @@ fn render_unit(spec: &UnitSpec) -> anyhow::Result<String> {
               # GH_TOKEN, package-manager tokens, openchamber/opencode session
               # secrets) or ambient session endpoints (SSH agent, D-Bus, X11)
               # via the manager environment. systemd rejects globs here, so
-              # the known names are enumerated explicitly.\n\
-         UnsetEnvironment=GITHUB_TOKEN GH_TOKEN NPM_TOKEN NODE_AUTH_TOKEN DOCKER_AUTH_CONFIG BUN_AUTH_TOKEN OPENCHAMBER_AGENT_TOOL_TOKEN OPENCHAMBER_TOKEN OPENCHAMBER_SESSION_ID OPENCODE_SERVER_PASSWORD OPENCODE_TOKEN OPENCODE_AUTH_TOKEN SSH_AUTH_SOCK SSH_ASKPASS GPG_AGENT_INFO DBUS_SESSION_BUS_ADDRESS DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_RUNTIME_DIR\n\
+              # the known names are enumerated explicitly (see
+              # runtime_unset_environment()).\n\
+     UnsetEnvironment={unset_env}\n\
          # -- Privacy & Security Hardening --\n\
          NoNewPrivileges=yes\nProtectHome=read-only\nProtectSystem=full\n\
          ReadWritePaths=\"{working}\"\nEnvironment=\"HOME={working}/.ghost-cache/home\"\nEnvironment=\"XDG_CACHE_HOME={working}/.ghost-cache\"\nEnvironment=\"XDG_RUNTIME_DIR={working}/.ghost-cache/runtime\"\n\
@@ -275,7 +353,7 @@ fn render_unit(spec: &UnitSpec) -> anyhow::Result<String> {
          ProtectClock=yes\nProtectHostname=yes\nProtectKernelLogs=yes\nPrivateIPC=yes\n\
          RestrictNamespaces=yes\nLockPersonality=yes\nRestrictRealtime=yes\n\
 RestrictSUIDSGID=yes\nProtectProc=invisible\nPrivateDevices=yes\nProcSubset=pid\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\nCapabilityBoundingSet=\nUMask=0077\n\
-          SystemCallFilter=~@mount @swap @reboot @cpu-emulation @obsolete @module @raw-io @clock\n\
+          SystemCallFilter=~@mount @swap @reboot @cpu-emulation @obsolete @module @raw-io @clock @debug\n\
           {res_lines}{ip_filter}[Install]\nWantedBy=default.target\n",
         desc = escape_unit_value(if spec.description.is_empty() {
             &service_name
@@ -286,6 +364,7 @@ RestrictSUIDSGID=yes\nProtectProc=invisible\nPrivateDevices=yes\nProcSubset=pid\
         exec = quote_exec_args(spec.exec_start),
         res_lines = res_lines,
         ip_filter = IP_FILTER,
+        unset_env = runtime_unset_environment(),
     );
     Ok(content)
 }
@@ -442,7 +521,7 @@ mod tests {
             "PrivateDevices=yes\n",
             "ProcSubset=pid\n",
             "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n",
-            "SystemCallFilter=~@mount @swap @reboot @cpu-emulation @obsolete @module @raw-io @clock\n",
+            "SystemCallFilter=~@mount @swap @reboot @cpu-emulation @obsolete @module @raw-io @clock @debug\n",
             "IPAddressDeny=any\n",
             "IPAddressAllow=127.0.0.1 ::1\n",
         ] {
@@ -479,5 +558,49 @@ for candidate in [".ssh", ".config", ".local/state/demo-ghostprovider"] {
         assert!(!content.contains("TasksMax="));
         assert!(!content.contains("CPUQuota="));
         assert!(!content.contains("OOMScoreAdjust="));
+    }
+
+    /// Runtime `UnsetEnvironment=` must always cover the sandbox scrub lists
+    /// (otherwise the applied credential policy would widen at runtime) and
+    /// the enumerated cloud/panel secret names, whatever the host env looks
+    /// like.
+    #[test]
+    fn runtime_unset_env_covers_sandbox_scrub_and_panel_secret() {
+        let content = render_unit(&UnitSpec {
+            service_name: "demo-vert",
+            working_dir: Path::new("/tmp/vert"),
+            exec_start: "/x/serve 8000",
+            description: "demo",
+            env_file: None,
+            extra_env: &[],
+            res: ResourceLimits::none(),
+        })
+        .unwrap();
+        let line = content
+            .lines()
+            .find(|l| l.starts_with("UnsetEnvironment="))
+            .expect("UnsetEnvironment directive must be present");
+        for name in crate::hoster::sandbox::SCRUBBED_ENV_VARS
+            .iter()
+            .chain(crate::hoster::sandbox::SCRUBBED_AMBIENT_VARS)
+        {
+            assert!(
+                line.contains(name),
+                "runtime UnsetEnvironment misses {name:?}"
+            );
+        }
+        for name in [
+            "OPENCHAMBER_TOKEN",
+            "OPENCODE_TOKEN",
+            "AWS_ACCESS_KEY_ID",
+            "DATABASE_URL",
+            "PGPASSWORD",
+        ] {
+            assert!(
+                line.contains(name),
+                "runtime UnsetEnvironment misses {name:?}"
+            );
+        }
+        assert!(!line.contains("*"), "no globs tolerated in UnsetEnvironment");
     }
 }

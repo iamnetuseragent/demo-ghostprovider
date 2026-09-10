@@ -88,7 +88,12 @@ const BUILD_RESOURCE_PROPERTIES: &[&str] = &[
 /// filesystem reach, but env vars are how a hostile build step would
 /// exfiltrate a deployment credential (GITHUB_TOKEN/GH_TOKEN are set by the
 /// user for clone rate limits and are ubiquitous ambient CI secrets).
-const SCRUBBED_ENV_VARS: &[&str] = &[
+///
+/// `pub(crate)` so the runtime service units (units.rs) unset the SAME names
+/// from the manager environment: systemd `UnsetEnvironment=` does not support
+/// glob patterns (verified against systemd 261), so the enumerated names are
+/// the only way the deploy-time policy can be expressed on runtime units.
+pub(crate) const SCRUBBED_ENV_VARS: &[&str] = &[
     "GITHUB_TOKEN",
     "GH_TOKEN",
     "NPM_TOKEN",
@@ -106,7 +111,10 @@ const SCRUBBED_ENV_VARS: &[&str] = &[
 /// the X server. The sockets themselves stay in /run/user and could in theory
 /// be guessed by path — the practical vector is the ambient env, and it is
 /// removed here (see also `XDG_RUNTIME_DIR` redirect in `cache_env`).
-const SCRUBBED_AMBIENT_VARS: &[&str] = &[
+///
+/// `pub(crate)` so runtime service units (units.rs) unset the same names from
+/// the session manager environment.
+pub(crate) const SCRUBBED_AMBIENT_VARS: &[&str] = &[
     "SSH_AUTH_SOCK",
     "SSH_ASKPASS",
     "GPG_AGENT_INFO",
