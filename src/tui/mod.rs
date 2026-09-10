@@ -1172,9 +1172,10 @@ fn draw_services(
         Span::styled("[", Style::default().fg(DIM)),
         Span::styled("s", Style::default().fg(WARN_YELLOW)),
         Span::styled("]top ", Style::default().fg(DIM)),
+        Span::styled("star", Style::default().fg(DIM)),
         Span::styled("[", Style::default().fg(DIM)),
         Span::styled("t", Style::default().fg(OK_GREEN)),
-        Span::styled("]art ", Style::default().fg(DIM)),
+        Span::styled("] ", Style::default().fg(DIM)),
         Span::styled("[", Style::default().fg(DIM)),
         Span::styled("d", Style::default().fg(ERR_RED)),
         Span::styled("]elete ", Style::default().fg(DIM)),
@@ -1296,8 +1297,7 @@ fn hint_line(screen: &Screen) -> Line<'static> {
         }
         Screen::Services { .. } => vec![
             ("↑↓ select", BLUE),
-            ("s/t/d act", BLUE),
-            ("r refresh", ACCENT),
+            ("[s]top star[t] [d]elete [r]efresh", BLUE),
             ("Esc back", BLUE),
         ],
     };
