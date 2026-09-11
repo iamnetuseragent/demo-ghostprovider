@@ -287,7 +287,7 @@ mod tests {
                     "demo-memos must bind loopback explicitly, got: {}",
                     r.start_cmd
                 ),
-                other => panic!("unexpected service {} in catalog", other),
+                other => panic!("unexpected service {other} in catalog"),
             }
         }
     }
