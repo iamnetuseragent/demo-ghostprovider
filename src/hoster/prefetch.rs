@@ -31,7 +31,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -165,8 +165,11 @@ fn seed_pinned_plugins(
 /// Environment of the host prefetch runner: current env with (a) credentials
 /// scrubbed exactly like the sandbox scrubs them (a prefetch downloader must
 /// never inherit a deployment token either), (b) `CI=1` (pip/pnpm refuse host
-/// runs that look interactive), and (c) the same cache redirects as the build.
-fn host_env(project_dir: &Path) -> BTreeMap<String, String> {
+/// runs that look interactive), (c) the same cache redirects as the build, and
+/// (d) the provided PATH prefix when the toolbox provisioned pinned tools —
+/// the prefetch must use exactly the pinned bun/pnpm/go, not whatever is on
+/// the ambient PATH.
+fn host_env(project_dir: &Path, path_prefix: &[PathBuf]) -> BTreeMap<String, String> {
     let mut env: BTreeMap<String, String> = std::env::vars().collect();
     // Same credential + ambient-socket scrub as the build sandbox
     // (sandbox.rs::scrub_env): a prefetch downloader must never inherit a
@@ -174,10 +177,25 @@ fn host_env(project_dir: &Path) -> BTreeMap<String, String> {
     crate::hoster::sandbox::scrub_env(&mut env);
     env.insert("CI".to_string(), "1".to_string());
     let cache = crate::hoster::sandbox::cache_env_pub(Some(project_dir));
+    // The redirect targets (TMPDIR, HOME, the store dirs, …) must exist *now*:
+    // the host prefetch writes into them (pnpm's bundled node, for one, calls
+    // realpathSync on TMPDIR eagerly and dies on ENOENT). The sandbox precreates
+    // the same set before the build; do it here before the first prefetch step.
+    crate::hoster::sandbox::precreate_cache_dirs(project_dir, &cache);
     for (k, v) in cache {
         env.insert(k.to_string(), v);
     }
+    prepend_path_if_any(&mut env, path_prefix);
     env
+}
+
+/// Prepend `path_prefix` to the `PATH` value in `env`, preserving the rest of
+/// the ambient PATH. No-op for an empty prefix.
+fn prepend_path_if_any(env: &mut BTreeMap<String, String>, path_prefix: &[PathBuf]) {
+    if path_prefix.is_empty() {
+        return;
+    }
+    env.insert("PATH".to_string(), super::toolbox::join_path_with_ambient(path_prefix));
 }
 
 /// Run one host-phase dependency prefetch command. The command is a
@@ -186,18 +204,24 @@ fn host_env(project_dir: &Path) -> BTreeMap<String, String> {
 /// the host (bun and pnpm skip untrusted lifecycle scripts; pip
 /// `--only-binary=:all:` wheels are inert archives). Project build code never
 /// executes here; it runs later, inside the offline sandbox.
-pub fn run_host_step(cmd: &str, project_dir: &Path, log: &dyn Fn(&str)) -> anyhow::Result<()> {
-    run_host_step_timed(cmd, project_dir, log, PREFETCH_TIMEOUT)
+pub fn run_host_step(
+    cmd: &str,
+    project_dir: &Path,
+    path_prefix: &[PathBuf],
+    log: &dyn Fn(&str),
+) -> anyhow::Result<()> {
+    run_host_step_timed(cmd, project_dir, path_prefix, log, PREFETCH_TIMEOUT)
 }
 
 fn run_host_step_timed(
     cmd: &str,
     project_dir: &Path,
+    path_prefix: &[PathBuf],
     log: &dyn Fn(&str),
     timeout: Duration,
 ) -> anyhow::Result<()> {
     crate::hoster::validate::validate_build_cmd(cmd).map_err(|r| anyhow::anyhow!("{r}: {cmd}"))?;
-    let env = host_env(project_dir);
+    let env = host_env(project_dir, path_prefix);
 
     let _ = log;
     let mut builder = Command::new("/bin/sh");
@@ -438,7 +462,7 @@ mod tests {
         // credential, and must force CI=1 (pip/pnpm refuse host runs that look
         // interactive, e.g. pnpm's module-dir purge prompt).
         let dir = std::env::temp_dir().join(format!("gp-prefetch-env-{}", std::process::id()));
-        let env = host_env(&dir);
+        let env = host_env(&dir, &[]);
         assert_eq!(env.get("GITHUB_TOKEN"), None, "credential must be scrubbed");
         assert_eq!(env.get("CI").map(String::as_str), Some("1"));
         unsafe {
@@ -448,10 +472,34 @@ mod tests {
     }
 
     #[test]
+    fn host_prefetch_env_prepends_provisioned_path() {
+        let dir = std::env::temp_dir().join(format!("gp-prefetch-prefix-{}", std::process::id()));
+        let prefix = vec![PathBuf::from("/srv/x/.ghost-cache/toolbox/bin")];
+        let env = host_env(&dir, &prefix);
+        let path = env.get("PATH").unwrap();
+        assert!(
+            path.starts_with("/srv/x/.ghost-cache/toolbox/bin:"),
+            "pinned dir must lead PATH: {path}"
+        );
+        assert!(
+            path.ends_with(&std::env::var("PATH").unwrap_or_default()),
+            "ambient PATH preserved: {path}"
+        );
+        // Empty prefix → PATH untouched by the prefix.
+        let env2 = host_env(&dir, &[]);
+        assert_eq!(
+            env2.get("PATH"),
+            std::env::var("PATH").ok().as_ref(),
+            "no prefix → no PATH rewrite"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn host_prefetch_step_rejects_dangerous_command() {
         let dir = std::env::temp_dir().join(format!("gp-prefetch-bad-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let err = run_host_step("rm -rf /", &dir, &|_| {}).unwrap_err();
+        let err = run_host_step("rm -rf /", &dir, &[], &|_| {}).unwrap_err();
         assert!(err.to_string().contains("rejected"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -469,7 +517,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gp-prefetch-hang-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let start = std::time::Instant::now();
-        let err = run_host_step_timed("exec sleep 300", &dir, &|_| {}, Duration::from_millis(700)).unwrap_err();
+        let err = run_host_step_timed("exec sleep 300", &dir, &[], &|_| {}, Duration::from_millis(700)).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("timed out"), "{msg}");
         assert!(

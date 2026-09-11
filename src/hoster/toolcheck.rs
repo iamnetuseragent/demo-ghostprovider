@@ -50,6 +50,28 @@ impl Tool {
     }
 }
 
+/// The [`Tool`] whose release binary is named `bin`, if any.
+pub fn tool_from_bin(bin: &str) -> Option<Tool> {
+    match bin {
+        "go" => Some(Tool::Go),
+        "bun" => Some(Tool::Bun),
+        "pnpm" => Some(Tool::Pnpm),
+        "node" => Some(Tool::Node),
+        "python3" => Some(Tool::Python),
+        _ => None,
+    }
+}
+
+/// Tools the toolbox can provision into the project cache (`toolbox.rs`):
+/// their official releases are pure downloads, so a missing/outdated install
+/// never blocks a deploy. Everything else (python3, node) stays a system
+/// requirement. Go is provisionable only for the *baseline* (missing `go`):
+/// an installed-but-old `go` under `GOTOOLCHAIN=auto` still self-heals via the
+/// seeded file:// toolchain proxy, exactly as before.
+pub fn is_auto_provisionable(tool: Tool) -> bool {
+    matches!(tool, Tool::Bun | Tool::Pnpm | Tool::Go)
+}
+
 pub(crate) fn v_str(v: Ver) -> String {
     format!("{}.{}.{}", v.0, v.1, v.2)
 }
@@ -335,7 +357,12 @@ pub fn check_versions(project_dir: &Path, service: &str) -> Vec<String> {
 
 /// Structured variant of [`check_versions`] used by the deploy pipeline to
 /// distinguish "abort" from "mention and continue".
-pub fn check_findings(project_dir: &Path, service: &str) -> Vec<Finding> {
+/// Every version the project's own manifests demand, as the doctor sees them:
+/// package.json `engines`/`packageManager` (root + `web/`), go.mod
+/// `go`/`toolchain` directives and pyproject.toml `requires-python`. Same tool
+/// demanded by several manifests keeps the highest bar. Empty when no manifest
+/// exists or pins nothing.
+pub fn manifest_requirements(project_dir: &Path) -> Vec<(Tool, Ver)> {
     let mut reqs: Vec<(Tool, Ver)> = Vec::new();
     for rel in ["package.json", "web/package.json"] {
         if let Ok(t) = std::fs::read_to_string(project_dir.join(rel)) {
@@ -362,17 +389,67 @@ pub fn check_findings(project_dir: &Path, service: &str) -> Vec<Finding> {
             None => merged.push((t, v)),
         }
     }
+    merged
+}
+
+/// Doctor line for a provisionable tool gap: informational (never prefixed
+/// with `!`), because the deploy provisions the pinned build into the project
+/// cache instead of aborting. Deliberately keeps none of the "update
+/// first:"/"install:" markers, so neither renderer treats it as a hard issue.
+fn provision_note(service: &str, tool: Tool, min: Ver, gap: &Gap) -> String {
+    let name = tool.label();
+    let bin = tool.bin();
+    let suffix =
+        " — a pinned, SHA-256-verified build will be provisioned into this project's \
+         .ghost-cache for the deploy (this software never installs system packages)";
+    match gap {
+        Gap::Missing => format!(
+            "{service} needs {name} >= {} but '{bin}' is not installed{suffix}",
+            v_str(min),
+        ),
+        Gap::Outdated { have } => format!(
+            "{service} needs {name} >= {}, found {}{suffix}",
+            v_str(min),
+            v_str(*have),
+        ),
+    }
+}
+
+/// Structured variant of [`check_versions`] used by the deploy pipeline to
+/// distinguish "abort" from "mention and continue".
+pub fn check_findings(project_dir: &Path, service: &str) -> Vec<Finding> {
+    let merged = manifest_requirements(project_dir);
     gaps(&merged, installed_version)
         .iter()
-        .map(|(t, m, g)| match (t, g) {
-            (Tool::Go, Gap::Outdated { have }) if toolchain_auto_fetch() => Finding {
-                blocking: false,
-                text: go_auto_note(service, *m, *have),
-            },
-            _ => Finding {
-                blocking: true,
-                text: message(service, *t, *m, g),
-            },
+        .map(|(t, m, g)| {
+            // Provisionable tools (bun/pnpm/go) never block: the toolbox
+            // provisions a pinned build into the project cache instead. Go's
+            // installed-but-old self-heal (GOTOOLCHAIN=auto) stays untouched.
+            if is_auto_provisionable(*t)
+                && !(matches!((t, g), (Tool::Go, Gap::Outdated { .. })) && toolchain_auto_fetch())
+            {
+                Finding {
+                    blocking: false,
+                    text: provision_note(service, *t, *m, g),
+                }
+            } else if matches!((t, g), (Tool::Go, Gap::Outdated { .. })) && toolchain_auto_fetch()
+            {
+                // Installable-but-old Go under auto-toolchain mode: the
+                // existing informational note (toolchain fetched from the
+                // seeded file:// proxy during the build).
+                let Gap::Outdated { have } = g else {
+                    unreachable!("guarded above")
+                };
+                Finding {
+                    blocking: false,
+                    text: go_auto_note(service, *m, *have),
+                }
+            } else {
+                Finding {
+                    blocking: true,
+                    text: message(service, *t, *m, g),
+                }
+            }
         })
         .collect()
 }
@@ -502,5 +579,26 @@ mod tests {
         assert!(!crate::hoster::toolcheck::is_issue_line(&note), "{note}");
         assert!(note.contains(">= 1.27.0"), "{note}");
         assert!(note.contains("GOTOOLCHAIN=auto"), "{note}");
+    }
+
+    /// Provisionable tool gaps (bun/pnpm/go) read as inform-and-continue, not
+    /// an issue: no `!` prefix, no fix-command marker, and explicitly "will be
+    /// provisioned".
+    #[test]
+    fn provisionable_gaps_are_non_blocking_notes() {
+        for (tool, gap) in [
+            (Tool::Bun, Gap::Missing),
+            (Tool::Pnpm, Gap::Outdated { have: (11, 0, 0) }),
+            (Tool::Go, Gap::Missing),
+        ] {
+            let note = provision_note("Memos", tool, (11, 0, 1), &gap);
+            assert!(!note.starts_with('!'), "{tool:?}: {note}");
+            assert!(!is_issue_line(&note), "{tool:?}: {note}");
+            assert!(note.contains("provisioned"), "{tool:?}: {note}");
+        }
+        // python3 (not provisionable) must keep the hard message form.
+        let py = message("SearXNG", Tool::Python, (3, 10, 0), &Gap::Missing);
+        assert!(py.contains(" — install: "), "{py}");
+        assert!(is_issue_line(&py), "{py}");
     }
 }

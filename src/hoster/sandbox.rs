@@ -369,7 +369,7 @@ fn cache_env(project_dir: Option<&Path>) -> BTreeMap<&'static str, String> {
     ])
 }
 
-fn precreate_cache_dirs(project_dir: &Path, env: &BTreeMap<&'static str, String>) {
+pub(crate) fn precreate_cache_dirs(project_dir: &Path, env: &BTreeMap<&'static str, String>) {
     if env.is_empty() {
         return;
     }

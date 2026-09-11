@@ -14,6 +14,7 @@ pub mod rawfetch;
 pub mod recipes;
 pub mod sandbox;
 pub mod secrets;
+pub mod toolbox;
 pub mod toolcheck;
 pub mod units;
 pub mod validate;

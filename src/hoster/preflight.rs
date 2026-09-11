@@ -38,8 +38,14 @@ pub fn preflight_check(tools: &[&str]) -> Vec<String> {
     }
 
     // ── per-recipe build tools ──
+    // bun/pnpm/go are auto-provisioned into the project cache later this
+    // deploy (see `toolbox.rs`); a missing system install is not a blocker.
+    // Everything else (python3, node) stays a hard requirement.
     for tool in tools {
         if !which(tool) {
+            if is_provisionable(tool) {
+                continue;
+            }
             issues.push(format!(
                 "'{tool}' not found on PATH — required by this service's build (install hint: {})",
                 install_hint(tool)
@@ -48,6 +54,13 @@ pub fn preflight_check(tools: &[&str]) -> Vec<String> {
     }
 
     issues
+}
+
+/// True for the tools the toolbox can provision into the project cache; see
+/// `toolcheck::is_auto_provisionable`. Preflight skips these so a missing bun/
+/// pnpm/go can be provisioned instead of aborting the deploy.
+fn is_provisionable(tool: &str) -> bool {
+    super::toolcheck::tool_from_bin(tool).is_some_and(super::toolcheck::is_auto_provisionable)
 }
 
 pub fn which(bin: &str) -> bool {

@@ -1,8 +1,8 @@
 //! Supply-chain pin: the compiled-in remote allowlist must exactly match
 //! what the in-code documentation (netlog.rs) declares. `cdn.jsdelivr.net`
 //! was added for the SHA-pinned paraglide-js plugin fetch (VERT recipe);
-//! README "Security model" is deliberately untouched in this change and
-//! must be synced once the maintainer approves editing it. Any endpoint
+//! `release-assets.githubusercontent.com` and `dl.google.com` were added for
+//! the pinned build-tool auto-provisioning (`toolbox.rs`). Any endpoint
 //! change requires a conscious change here AND in netlog.rs.
 
 use demo_ghostprovider::netlog::ALLOWED_ENDPOINTS;
@@ -17,9 +17,11 @@ fn allowlist_matches_documented_endpoints() {
             "api.github.com",
             "cdn.jsdelivr.net",
             "codeload.github.com",
+            "dl.google.com",
             "github.com",
             "proxy.golang.org",
             "raw.githubusercontent.com",
+            "release-assets.githubusercontent.com",
             "storage.googleapis.com"
         ],
         "ALLOWED_ENDPOINTS changed! Update netlog.rs docs and this test in the \
