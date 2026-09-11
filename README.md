@@ -45,6 +45,8 @@ Here is the security module that Ghost Provider uses, this is the necessary arch
 
 - **Sandbox** — builds run in a mandatory isolated environment (sandboxed home, locked-down network, resource caps). A deploy proceeds only when the sandbox verifies as FULL.
 
+- **Pinned build tools, provisioned into the project cache** — when a service needs the build tools `bun`/`pnpm`/`go` and none (or an outdated one) is installed, the exact pinned release is downloaded through the same allowlisted, net.log-recorded client, SHA-256-verified against a compiled-in checksum table, and extracted into the project's `.ghost-cache` (never system-wide, no root). `python3` remains a hard system requirement.
+
 ## System Scan
 
 Scans your machine for prerequisites and maps occupied ports with their owning processes — nothing more. Deliberately: no VPN detection, no service fingerprinting, so the report stays useless to anyone but you. "Network" is measured with the same allowlisted, net.log-recorded HTTPS GET to github.com the fetches use — never ICMP ping or raw DNS.

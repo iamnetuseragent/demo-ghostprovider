@@ -67,6 +67,25 @@ fn push_deploy_line(lines: &mut Vec<String>, line: String) {
     }
 }
 
+/// Once a deploy finishes, its output is compressed to the lines that matter:
+/// warnings, verdicts, sandbox/provision notes and the reachable URL. The
+/// full log already streamed past the user as it happened; keeping a compact
+/// tail makes the finished state last, which is exactly what a brittle
+/// terminal wants to preserve.
+fn compress_done(lines: &mut Vec<String>) {
+    lines.retain(|l| {
+        let t = l.trim_start();
+        t.starts_with('!')
+            || t.starts_with("warn: ")
+            || t.starts_with("sandbox: ")
+            || t.starts_with("provision: ")
+            || t.starts_with("✔")
+            || t.contains("listening on ")
+            || t.contains("deployment failed")
+            || t.is_empty()
+    });
+}
+
 pub(crate) enum Screen {
     Main {
         selected: usize,
@@ -180,6 +199,7 @@ fn event_loop(
                         if !ok {
                             push_deploy_line(lines, "deployment failed".into());
                         }
+                        compress_done(lines);
                         *done = Some(ok);
                     }
                 }

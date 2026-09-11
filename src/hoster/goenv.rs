@@ -52,12 +52,17 @@ fn toolchain_tag(go_ver: &str, os: &str, arch: &str) -> String {
 
 /// Env overrides that make a sandboxed Go build resolve the toolchain module
 /// from a pre-seeded local cache. Returns an empty vec when nothing is
-/// needed, so the caller can pass it through unconditionally.
-pub fn go_toolchain_env(project_dir: &Path) -> anyhow::Result<Vec<(String, String)>> {
+/// needed, so the caller can pass it through unconditionally. `path_prefix`
+/// carries the toolbox dirs of a provisioned Go, so the probe sees the pinned
+/// binary instead of an ambient one (or none).
+pub fn go_toolchain_env(
+    project_dir: &Path,
+    path_prefix: &[std::path::PathBuf],
+) -> anyhow::Result<Vec<(String, String)>> {
     let Some(need) = go_mod_requirement_at(project_dir)? else {
         return Ok(Vec::new());
     };
-    let Some(have) = go_env_version() else {
+    let Some(have) = go_env_version(path_prefix) else {
         // `go` missing or not probing: the tool doctor already blocks the
         // build before we ever get here — nothing to seed.
         return Ok(Vec::new());
@@ -66,8 +71,9 @@ pub fn go_toolchain_env(project_dir: &Path) -> anyhow::Result<Vec<(String, Strin
         return Ok(Vec::new());
     }
 
-    let os = go_env_key("GOOS").unwrap_or_else(|| "linux".to_string());
-    let arch = go_env_key("GOARCH").unwrap_or_else(|| std::env::consts::ARCH.to_string());
+    let os = go_env_key("GOOS", path_prefix).unwrap_or_else(|| "linux".to_string());
+    let arch = go_env_key("GOARCH", path_prefix)
+        .unwrap_or_else(|| std::env::consts::ARCH.to_string());
     let tag = toolchain_tag(&toolcheck::v_str(need), &os, &arch);
 
     let base = project_dir.join(".ghost-cache").join("go-fileproxy");
@@ -112,12 +118,15 @@ fn go_mod_requirement_at(project_dir: &Path) -> anyhow::Result<Option<toolcheck:
     Ok(toolcheck::go_mod_requirement(&text))
 }
 
-/// `go env <key>` through the user's PATH; None when `go` is absent or dies.
-fn go_env_key(key: &str) -> Option<String> {
-    let out = std::process::Command::new("go")
-        .args(["env", key])
-        .output()
-        .ok()?;
+/// `go env <key>` through the user's PATH — or the provisioned toolbox dirs
+/// when `path_prefix` is non-empty — ; None when `go` is absent or dies.
+fn go_env_key(key: &str, path_prefix: &[std::path::PathBuf]) -> Option<String> {
+    let mut cmd = std::process::Command::new("go");
+    cmd.args(["env", key]);
+    if !path_prefix.is_empty() {
+        cmd.env("PATH", crate::hoster::toolbox::join_path_with_ambient(path_prefix));
+    }
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -147,8 +156,8 @@ fn proxy_escape(module: &str) -> String {
     out
 }
 
-fn go_env_version() -> Option<toolcheck::Ver> {
-    toolcheck::parse_version(&go_env_key("GOVERSION")?)
+fn go_env_version(path_prefix: &[std::path::PathBuf]) -> Option<toolcheck::Ver> {
+    toolcheck::parse_version(&go_env_key("GOVERSION", path_prefix)?)
 }
 
 /// Zip-hash rows of a `go.sum`: `module version h1:...`. The `version/go.mod`
@@ -521,7 +530,7 @@ mod tests {
         std::fs::create_dir_all(&p).unwrap();
         std::fs::write(p.join("go.mod"), "module probe.example\n\ngo 1.27.0\n").unwrap();
 
-        let env = go_toolchain_env(&p).unwrap();
+        let env = go_toolchain_env(&p, &[]).unwrap();
         assert_eq!(env.len(), 3, "expected GOPROXY + GOTOOLCHAIN + GONOSUMDB, got {env:?}");
         assert!(env[0].0 == "GOPROXY" && env[0].1.starts_with("file://"));
         assert!(env[1] == ("GOTOOLCHAIN".to_string(), "auto".to_string()));

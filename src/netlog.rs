@@ -56,12 +56,23 @@ use std::time::SystemTime;
 /// the permit is net.log-visible — and the content is additionally pinned by
 /// content SHA-256 at the recipe level: the CDN can only ever serve
 /// byte-identical plugin bytes, never a silent surprise.
+///
+/// `release-assets.githubusercontent.com` + `dl.google.com` serve the pinned
+/// build-tool downloads (`toolbox.rs`): GitHub's signed-URL redirect target
+/// for bun/pnpm release assets, and the Go release tarballs. Both are gated
+/// like every other hop — the permit is explicit because the pinned asset
+/// fetch needs it — and the bytes are additionally SHA-256 verified against
+/// `toolbox.rs::TOOLBOX_PINS` before a single executable is placed. These
+/// fetches are an alternative to a manually installed tool, never a bypass of
+/// the shadowed offline build (which still has no network).
 pub const ALLOWED_ENDPOINTS: &[&str] = &[
     "api.github.com",
     "cdn.jsdelivr.net",
+    "dl.google.com",
     "github.com",
     "raw.githubusercontent.com",
     "codeload.github.com",
+    "release-assets.githubusercontent.com",
     "proxy.golang.org",
     "storage.googleapis.com",
 ];
@@ -257,9 +268,11 @@ mod tests {
             &[
                 "api.github.com",
                 "cdn.jsdelivr.net",
+                "dl.google.com",
                 "github.com",
                 "raw.githubusercontent.com",
                 "codeload.github.com",
+                "release-assets.githubusercontent.com",
                 "proxy.golang.org",
                 "storage.googleapis.com"
             ],

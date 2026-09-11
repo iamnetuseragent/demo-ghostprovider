@@ -166,7 +166,44 @@ fn screen_line(line: &str) -> bool {
     t.starts_with('!')
         || t.starts_with("warn: ")
         || t.starts_with("sandbox: ")
+        || t.starts_with("provision: ")
         || t.contains("listening on ")
+}
+
+/// Which of the recipe's tools need provisioning into the project cache, in
+/// the order the toolbox pins expect. A tool is provisioned when the doctor
+/// would flag it (missing, or older than the manifest floor). Go is special:
+/// an installed-but-old `go` is left to GOTOOLCHAIN=auto + the seeded file://
+/// toolchain proxy, while a *missing* `go` always gets the pinned baseline
+/// (`None`), whose own default toolchain mode covers the rest.
+fn toolbox_needs(recipe: &DemoRecipe, project_dir: &Path) -> Vec<(super::toolcheck::Tool, Option<super::toolcheck::Ver>)> {
+    use super::toolcheck::{Tool, is_auto_provisionable, installed_version, manifest_requirements, tool_from_bin};
+    let reqs = manifest_requirements(project_dir);
+    let min_for = |t: Tool| reqs.iter().find(|(mt, _)| *mt == t).map(|(_, m)| *m);
+    let mut out = Vec::new();
+    for tool in recipe.tools {
+        let Some(t) = tool_from_bin(tool) else {
+            continue;
+        };
+        if !is_auto_provisionable(t) {
+            continue;
+        }
+        let Some(have) = installed_version(t) else {
+            out.push((t, if t == Tool::Go { None } else { min_for(t) }));
+            continue;
+        };
+        if t == Tool::Go {
+            // Present Go: doctor + GOTOOLCHAIN=auto handle a need>have gap.
+            continue;
+        }
+        let Some(min) = min_for(t) else {
+            continue;
+        };
+        if have < min {
+            out.push((t, Some(min)));
+        }
+    }
+    out
 }
 
 /// Shared entry point used by both the TUI and the `__deploy` subcommand:
@@ -331,6 +368,34 @@ pub fn deploy_service(
         return result;
     }
 
+    // ── toolbox: auto-provision pinned build tools into the project cache ──
+    // bun/pnpm/go the doctor flagged (missing, or too old for the manifest)
+    // are downloaded through the allowlisted client, SHA-256 verified against
+    // the pin table, and extracted into .ghost-cache/toolbox. The PATH prefix
+    // below makes the host prefetch and the offline sandbox build use exactly
+    // these pinned binaries. Failure is fatal, closed like the prefetch phase:
+    // with PrivateNetwork=yes the build cannot reach any registry to install a
+    // tool itself.
+    let needs = toolbox_needs(recipe, &project_dir);
+    let provisioned = if needs.is_empty() {
+        super::toolbox::Provisioned::default()
+    } else {
+        match super::toolbox::provision(&project_dir, &needs, &emit) {
+            Ok(p) => p,
+            Err(e) => {
+                report_err(
+                    &mut result,
+                    format!(
+                        "Build-tool provisioning failed: {e}\nThe build sandbox has PrivateNetwork=yes; the pinned tools must be provisioned on the host."
+                    ),
+                );
+                rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
+                return result;
+            }
+        }
+    };
+    let path_prefix: Vec<PathBuf> = provisioned.bin_dirs.clone();
+
     // ── prefetch (host phase, network available) ──
     // Dependency caches are filled BEFORE the sandboxed build so the build
     // itself can run offline under PrivateNetwork=yes. These are downloader
@@ -340,7 +405,7 @@ pub fn deploy_service(
     // produce a working tree — fail closed rather than build a broken service.
     for step in recipe.prefetch_steps {
         let resolved = resolve_project_step(step, &project_dir);
-        if let Err(e) = super::prefetch::run_host_step(&resolved, &project_dir, &emit) {
+        if let Err(e) = super::prefetch::run_host_step(&resolved, &project_dir, &path_prefix, &emit) {
             report_err(
                 &mut result,
                 format!(
@@ -381,8 +446,15 @@ pub fn deploy_service(
     // phase) and its failure is fatal: with PrivateNetwork=yes the sandboxed
     // `go build` could not fetch the toolchain itself.
     let mut build_env: Vec<(String, String)> = Vec::new();
+    // Pinned toolbox tools lead PATH inside the sandbox too: the offline
+    // build steps must invoke exactly the pinned bun/pnpm/go, never an
+    // ambient binary. `run_sandboxed` gives extra_env precedence over the
+    // ambient PATH, and pins are immutable once written.
+    if let Some(path) = provisioned.prepend_path() {
+        build_env.push(("PATH".to_string(), path));
+    }
     if recipe.language == "Go" {
-        match super::goenv::go_toolchain_env(&project_dir) {
+        match super::goenv::go_toolchain_env(&project_dir, &path_prefix) {
             Ok(env) => build_env.extend(env),
             Err(e) => {
                 report_err(
@@ -749,6 +821,7 @@ mod tests {
             "! sandbox: NO — refusing to build without isolation (the sandbox is mandatory)",
             "listening on http://localhost:8888",
             "! public-test-token leaked in output",
+            "provision: bun 1.4.2 (glibc) → .ghost-cache/toolbox/bin",
         ];
         for line in kept {
             assert!(screen_line(line), "expected to keep: {line}");
@@ -758,6 +831,7 @@ mod tests {
             "cloning repository...",
             "build...",
             "build: seeded Go module cache (193 module(s) ready)",
+            "proceeding without pinned tools (host bun reaches the registry)",
             "installing systemd unit demo-memos...",
             "probing runtime egress...",
             "starting service...",
