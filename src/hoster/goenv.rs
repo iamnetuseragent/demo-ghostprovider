@@ -191,15 +191,54 @@ fn go_download_cache(project_dir: &Path) -> std::path::PathBuf {
         .join("download")
 }
 
+/// Result of a Go module cache seed run.
+#[derive(Debug, Clone)]
+pub struct SeedResult {
+    /// Modules already present + newly seeded.
+    pub ready: usize,
+    /// Terminal failures (e.g. HTTP 404 — not retryable). Transient
+    /// network/DNS blips are retried permanently and never land here.
+    pub failed: Vec<String>,
+    /// How many modules still needed seeding at start.
+    pub total: usize,
+}
+
+fn is_terminal_http(msg: &str) -> bool {
+    // 4xx except 403/429 which are rate-limit/transient and already handled
+    // in httpclient (permanent retry). Anything else 4xx is a bug, not network.
+    let m = msg.to_ascii_lowercase();
+    m.contains("http 400")
+        || m.contains("http 401")
+        || m.contains("http 402")
+        || m.contains("http 404")
+        || m.contains("http 405")
+        || m.contains("http 406")
+        || m.contains("http 408")
+        || m.contains("http 409")
+        || m.contains("http 410")
+        || m.contains("http 411")
+        || m.contains("http 422")
+        || m.contains("http 423")
+}
+
+fn seed_backoff(attempt: u32) -> std::time::Duration {
+    let secs = 1u64.checked_shl(attempt).unwrap_or(u64::MAX).min(120);
+    std::time::Duration::from_secs(secs)
+}
+
 /// Best-effort pre-seed of every module zip listed as an `h1:` row in the
-/// project's `go.sum`. Returns the number of modules seeded; `Ok(0)` when the
-/// cache was already complete or no `go.sum` exists. Never trusts a partial
-/// file: only a finished, size-verified zip counts, so an interrupted run
-/// resumes instead of re-serializing (same staging trick as `fetch_zip`).
-pub fn seed_go_modules(project_dir: &Path) -> anyhow::Result<usize> {
+/// project's `go.sum`. Network/DNS failures are retried **permanently** with
+/// exponential backoff capped at 120s — the deploy never fails-closed on a
+/// transient blip (the original bug: 6 of 193 failed on DNS `Try again`).
+/// Only terminal HTTP 4xx land in `SeedResult.failed`; transient errors are
+/// retried forever until the network recovers. Returns `SeedResult` instead
+/// of `Result` so the caller can decide best-effort vs fatal.
+pub fn seed_go_modules(project_dir: &Path) -> anyhow::Result<SeedResult> {
     let sum_text = match std::fs::read_to_string(project_dir.join("go.sum")) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SeedResult { ready: 0, failed: Vec::new(), total: 0 })
+        }
         Err(e) => {
             return Err(e)
                 .with_context(|| format!("reading go.sum in {}", project_dir.display()))
@@ -218,7 +257,7 @@ pub fn seed_go_modules(project_dir: &Path) -> anyhow::Result<usize> {
     }
     let total = jobs.len();
     if total == 0 {
-        return Ok(seeded);
+        return Ok(SeedResult { ready: seeded, failed: Vec::new(), total: 0 });
     }
 
     let next = Arc::new(Mutex::new(0usize));
@@ -241,43 +280,35 @@ pub fn seed_go_modules(project_dir: &Path) -> anyhow::Result<usize> {
                 break;
             }
             let (module, ver, h1) = jobs[i].clone();
-            // One transient failure must not kill the whole pool: everything
-            // else keeps seeding (resumable), and the straggler is reported
-            // once — `go` re-fetches it directly and the next run resumes it.
-            // Retry with a short backoff so a brief DNS/network blip (e.g.
-            // "failed to lookup address information: Try again") does not
-            // fail-closed a deploy that would otherwise succeed.
-            let mut last_err = None;
-            for attempt in 0..4 {
-                if let Err(e) = seed_one_module(&cache, &module, &ver, &h1) {
-                    last_err = Some(e);
-                } else {
-                    last_err = None;
-                    break;
+            // Permanent retry for transient network/DNS. httpclient already
+            // retries DNS/5xx forever, so most transients never surface here —
+            // this loop covers any remaining transient (filesystem, size mismatch)
+            // and terminal 4xx (recorded as failed).
+            let mut attempt: u32 = 0;
+            loop {
+                match seed_one_module(&cache, &module, &ver, &h1) {
+                    Ok(()) => break,
+                    Err(e) => {
+                        let msg = format!("{e:#}");
+                        if is_terminal_http(&msg) {
+                            errors.lock().unwrap().push(format!("{module}@{ver}: {msg}"));
+                            break;
+                        }
+                        // Transient — permanent retry with exponential backoff.
+                        let delay = seed_backoff(attempt);
+                        eprintln!("go module retry #{attempt}: {module}@{ver}: {msg} — waiting {delay:?}");
+                        std::thread::sleep(delay);
+                        attempt = attempt.saturating_add(1).min(30);
+                    }
                 }
-                if attempt < 3 {
-                    std::thread::sleep(std::time::Duration::from_millis(
-                        500u64 * (attempt as u64 + 1),
-                    ));
-                }
-            }
-            if let Some(e) = last_err {
-                errors.lock().unwrap().push(format!("{module}@{ver}: {e:#}"));
             }
         }));
     }
     for h in handles {
         let _ = h.join();
     }
-    let errors = errors.lock().unwrap();
-    if let Some(first) = errors.first() {
-        return Err(anyhow::anyhow!(
-            "{} of {} module(s) failed (go will fetch directly); first: {first}",
-            errors.len(),
-            total
-        ));
-    }
-    Ok(seeded + total)
+    let errors = errors.lock().unwrap().clone();
+    Ok(SeedResult { ready: seeded + (total - errors.len()), failed: errors, total })
 }
 
 /// Fetch one module (`semver` or pseudo-version) into the download cache:
@@ -581,7 +612,8 @@ mod tests {
         .unwrap();
 
         let first = seed_go_modules(&p).unwrap();
-        assert_eq!(first, 1, "the pseudoversion row should seed once");
+        assert_eq!(first.ready, 1, "the pseudoversion row should seed once");
+        assert!(first.failed.is_empty(), "no failures expected: {first:?}");
 
         let vdir = p
             .join(".ghost-cache/go-mod/cache/download/google.golang.org/genproto/googleapis/api/@v");
@@ -597,7 +629,8 @@ mod tests {
         assert!(vdir.join("v0.0.0-20260810153831-ec0a7760b754.mod").metadata().unwrap().len() > 0);
 
         let second = seed_go_modules(&p).unwrap();
-        assert_eq!(second, 1, "second run sees the seeded zip and does nothing");
+        assert_eq!(second.ready, 1, "second run sees the seeded zip and does nothing");
+        assert!(second.failed.is_empty(), "no failures expected: {second:?}");
         let _ = std::fs::remove_dir_all(&p);
     }
 }

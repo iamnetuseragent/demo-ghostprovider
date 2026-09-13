@@ -22,7 +22,11 @@ use anyhow::{Context, anyhow};
 use ureq::http::Response;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+#[allow(dead_code)]
 const RETRIES: u32 = 2;
+/// Max pause between retries — DNS/transient blips can last minutes;
+/// 120s caps exponential backoff without giving up (retries are permanent).
+const MAX_BACKOFF: Duration = Duration::from_secs(120);
 /// Hop cap for manual redirect following. GitHub pointers (e.g. the archive
 /// 302 to codeload) are a single hop; anything beyond this is hostile.
 const MAX_REDIRECTS: u32 = 5;
@@ -341,18 +345,31 @@ pub fn remote_len(url: &str) -> anyhow::Result<u64> {
     anyhow::bail!("no usable size header in probe response for {url}")
 }
 
+fn is_dns_error(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("try again")
+        || m.contains("temporary failure")
+        || m.contains("name or service not known")
+        || m.contains("address not available")
+        || m.contains("failed to lookup address")
+        || m.contains("no address associated")
+        || m.contains("name resolution")
+}
+
+fn backoff_delay(attempt: u32) -> Duration {
+    // 1s, 2s, 4s, 8s, 16s, 32s, 64s, 120s, 120s, ...
+    let secs = 1u64.checked_shl(attempt).unwrap_or(u64::MAX).min(MAX_BACKOFF.as_secs());
+    Duration::from_secs(secs)
+}
+
 /// Shared retry core for every GET-family fetch.
 ///
 /// Transports are tried in preference order per attempt: the ambient proxy
 /// first (the user's explicit intent), then a direct connection when a proxy
-/// applies to this URL. A proxy/VPN that is switched off mid-deploy leaves an
-/// agent still armed with `HTTPS_PROXY` pointing at a now-dead socket; the
-/// direct fallback absorbs exactly that: the request is retried without the
-/// proxy before the fetch is declared failed. The allowlist gates the target
-/// on every hop either way — neither transport opens a socket to a host
-/// outside [`ALLOWED_ENDPOINTS`]. Short backoff between attempts ramps so a
-/// brief VPN reconnect (seconds) is absorbed instead of failing the whole
-/// deploy. HTTP error statuses (>=400) are terminal and returned wrapped.
+/// applies to this URL. Network/DNS errors are retried **permanently** with
+/// exponential backoff capped at 120s — the deploy never fails-closed on a
+/// transient blip (e.g. DNS `Try again`). Only non-retryable HTTP 4xx (except
+/// 403 rate-limit and 5xx) are terminal. Every retry is net.log-recorded.
 fn fetch(
     url: &str,
     global: Duration,
@@ -366,9 +383,10 @@ fn fetch(
     let direct = ambient_proxy_for(url).map(|_| {
         agent_with_proxy(global, recv_body, accept_encoding, false)
     });
-    let mut last_err: Option<anyhow::Error> = None;
 
-    for attempt_no in 0..=RETRIES {
+    let mut attempt_no: u32 = 0;
+    let mut last_err: Option<anyhow::Error> = None;
+    loop {
         for agent in std::iter::once(&proxied).chain(direct.iter()) {
             let res = match ranged {
                 Some((start, end)) => attempt_range(agent, url, (start, end)),
@@ -376,30 +394,60 @@ fn fetch(
             };
             match res {
                 Ok(r) => {
-                    // 403 is retried (rate limiting / DDoS shield) with a
-                    // growing pause; the response body is drained so the
-                    // pooled connection is released cleanly.
-                    if r.status().as_u16() == 403 && attempt_no < RETRIES {
+                    let code = r.status().as_u16();
+                    // 403 rate-limit: retry indefinitely with backoff.
+                    if code == 403 {
                         let _ = r.into_body().read_to_vec();
+                        last_err = Some(anyhow!("HTTP 403 from {url} (rate-limited, retrying)"));
                         break;
+                    }
+                    // 5xx: server overload — retry permanently.
+                    if (500..=599).contains(&code) {
+                        let _ = r.into_body().read_to_vec();
+                        last_err = Some(anyhow!("HTTP {code} from {url}"));
+                        break;
+                    }
+                    // Other 4xx: terminal (bad request, not found, etc.).
+                    if (400..=499).contains(&code) {
+                        return Err(anyhow!("HTTP {code} from {url}"));
                     }
                     return Ok(r);
                 }
-                Err(e @ ureq::Error::StatusCode(_)) => return Err(anyhow!("{e}")),
+                Err(e @ ureq::Error::StatusCode(_)) => {
+                    // ureq status wrapper — extract code if possible.
+                    let s = e.to_string();
+                    let is_5xx = s.contains(" 500") || s.contains(" 502") || s.contains(" 503") || s.contains(" 504");
+                    let is_403 = s.contains(" 403");
+                    if is_403 || is_5xx {
+                        last_err = Some(anyhow!("{e}"));
+                        break;
+                    }
+                    return Err(anyhow!("{e}"));
+                }
                 Err(e) => {
-                    // Transport error: try the next transport (direct), or the
-                    // next attempt after a backoff pause.
+                    let msg = e.to_string();
+                    let dns = is_dns_error(&msg);
+                    let host = host_of(url).unwrap_or_default();
+                    // Record every transient failure so the user can see
+                    // we are waiting, not stuck.
+                    crate::netlog::record(&host, &path_of(url), Err(format!("retry #{attempt_no}: {msg}")));
+                    let _ = dns;
                     last_err = Some(anyhow!("{e}"));
                 }
             }
         }
-        if attempt_no < RETRIES {
-            // Ramp the inter-attempt pause 1s, 2s, ... so a brief VPN/proxy
-            // reconnect is absorbed instead of failing the whole deploy.
-            std::thread::sleep(Duration::from_secs(1 + attempt_no as u64));
+        // Permanent retry: exponential backoff capped at MAX_BACKOFF.
+        let delay = backoff_delay(attempt_no);
+        std::thread::sleep(delay);
+        // Safety: attempt_no saturates at 30 to keep delay at cap.
+        attempt_no = attempt_no.saturating_add(1).min(30);
+        // Loop forever — only successful fetch or terminal 4xx returns.
+        // The process can be interrupted with Ctrl-C (SIGINT).
+        if attempt_no == 0 {
+            unreachable!();
         }
+        let _ = &last_err;
     }
-    Err(last_err.unwrap_or_else(|| anyhow!("request failed: {url}")))
 }
 
 /// GET a URL and return the response body as text with retry/curl-fallback

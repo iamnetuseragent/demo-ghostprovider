@@ -469,22 +469,48 @@ pub fn deploy_service(
         }
     }
     // Go services: also pre-seed the module cache (every h1: zip in go.sum,
-    // parallel and resumable). With PrivateNetwork=yes this is not a
-    // convenience — it is the only source modules will have.
+    // parallel and resumable). Network/DNS blips are retried permanently
+    // (exponential backoff to 120s) — the deploy waits until the network
+    // recovers. Only terminal 4xx land as failed; partial success is
+    // best-effort: ≤20% failed = warning & continue, ≤50% = warning,
+    // >50% = fatal (network truly dead).
     if recipe.language == "Go" {
         match super::goenv::seed_go_modules(&project_dir) {
-            Ok(n) => emit(&format!(
-                "build: seeded Go module cache ({n} module(s) ready)"
+            Ok(r) if r.failed.is_empty() => emit(&format!(
+                "build: seeded Go module cache ({} module(s) ready)",
+                r.ready
             )),
+            Ok(r) => {
+                let failed = r.failed.len();
+                let total = r.total;
+                let first = r.failed.first().cloned().unwrap_or_default();
+                // Best-effort thresholds.
+                if failed * 2 > total {
+                    // >50% failed — network truly dead, fail closed.
+                    report_err(
+                        &mut result,
+                        format!(
+                            "Go module cache seed failed: {failed} of {total} module(s) failed; first: {first}\nThe build sandbox has PrivateNetwork=yes; modules must be fully pre-seeded on the host."
+                        ),
+                    );
+                    rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
+                    return result;
+                }
+                // ≤50% failed — warn and continue; `go build` will try
+                // what it can (and next deploy resumes the rest).
+                emit(&format!(
+                    "build: Go module cache partial: {failed} of {total} module(s) failed (best-effort, continuing); first: {first}"
+                ));
+                emit(&format!(
+                    "build: {} module(s) ready, {failed} failed — deploy continues",
+                    r.ready
+                ));
+            }
             Err(e) => {
-                // Go services have no prefetch step for modules (the seeder
-                // IS the prefetch, running on the host with network). A
-                // partial seed leaves `go build` without egress, so fail
-                // closed exactly like the prefetch phase does.
                 report_err(
                     &mut result,
                     format!(
-                        "Go module cache seed failed: {e}\nThe build sandbox has PrivateNetwork=yes; modules must be fully pre-seeded on the host."
+                        "Go module cache seed failed: {e:#}\nThe build sandbox has PrivateNetwork=yes; modules must be fully pre-seeded on the host."
                     ),
                 );
                 rollback_failed(&mut result, recipe.service_name, &project_dir, None, &emit);
