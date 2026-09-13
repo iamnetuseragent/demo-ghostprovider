@@ -45,7 +45,7 @@ fn port_rows_from(
         .collect()
 }
 
-pub(super) fn spawn_scan(tx: Sender<Msg>, seq: u64) {
+pub(crate) fn spawn_scan(tx: Sender<Msg>, seq: u64) {
     std::thread::spawn(move || {
         let started = std::time::SystemTime::now();
         let result = crate::analyzer::probe::run_analysis();
@@ -122,10 +122,85 @@ fn which(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn start_deployment(tx: Sender<Msg>, url: String) {
+const MAX_DEPLOY_LOG_BYTES: u64 = 1 << 20;
+const DEPLOY_LOG_KEEP_BYTES: usize = 64 * 1024;
+
+pub(crate) fn deploy_log_path() -> std::path::PathBuf {
+    crate::paths::deploy_log_file()
+}
+
+pub(crate) fn append_deploy_log(line: &str) {
+    let path = deploy_log_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(md) = std::fs::metadata(&path)
+        && md.len() > MAX_DEPLOY_LOG_BYTES
+    {
+        if let Ok(content) = std::fs::read(&path) {
+            let keep = content.len().saturating_sub(DEPLOY_LOG_KEEP_BYTES);
+            let mut slice = &content[keep..];
+            if let Some(pos) = slice.iter().position(|&b| b == b'\n') {
+                slice = &slice[pos + 1..];
+            }
+            let _ = std::fs::write(&path, slice);
+        }
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+pub(crate) fn read_deploy_log() -> Vec<String> {
+    let path = deploy_log_path();
+    match std::fs::read_to_string(&path) {
+        Ok(s) => s.lines().map(|l| l.to_string()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+pub(crate) fn clear_deploy_log() {
+    let path = deploy_log_path();
+    let _ = std::fs::remove_file(&path);
+}
+
+pub(crate) fn journal_raw_for(unit: &str) -> Vec<String> {
+    let out = std::process::Command::new("journalctl")
+        .args([
+            "--user",
+            "-u",
+            unit,
+            "-n",
+            "50",
+            "--no-pager",
+            "--all",
+            "-o",
+            "short",
+        ])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|l| l.to_string())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) fn start_deployment(tx: Sender<Msg>, url: String) {
     std::thread::spawn(move || {
+        append_deploy_log(&format!(
+            "== deploy {url} started at {} ==",
+            crate::netlog::format_utc(std::time::SystemTime::now())
+        ));
         let log_tx = tx.clone();
         let log = move |line: String| {
+            append_deploy_log(&line);
             let _ = log_tx.send(Msg::Log(line));
         };
         // The deploy pipeline (clone/git/rawfetch) reports diagnostics via
@@ -137,6 +212,10 @@ pub(super) fn start_deployment(tx: Sender<Msg>, url: String) {
         let capture = StderrCapture::new(tx.clone());
         let ok = deploy::run_deployment(&url, &log) == deploy::DeployOutcome::Deployed;
         capture.restore();
+        append_deploy_log(&format!(
+            "== deploy {url} done: {} ==",
+            if ok { "ok" } else { "failed" }
+        ));
         let _ = tx.send(Msg::DeployDone(ok));
     });
 }
@@ -174,6 +253,7 @@ impl StderrCapture {
             let file = unsafe { std::fs::File::from_raw_fd(read) };
             let mut lines = std::io::BufReader::new(file).lines();
             while let Some(Ok(line)) = lines.next() {
+                append_deploy_log(&line);
                 let _ = tx.send(Msg::Log(line));
             }
         });
@@ -202,7 +282,7 @@ impl StderrCapture {
 }
 
 /// (unit name, status, url) rows for the services screen.
-pub(super) fn service_rows() -> Vec<(String, String, String)> {
+pub(crate) fn service_rows() -> Vec<(String, String, String)> {
     crate::state::list()
         .into_iter()
         .map(|(name, entry)| {
@@ -217,7 +297,7 @@ pub(super) fn service_rows() -> Vec<(String, String, String)> {
         .collect()
 }
 
-pub(super) fn service_action(name: &str, action: &str) -> String {
+pub(crate) fn service_action(name: &str, action: &str) -> String {
     let res = match action {
         "stop" => systemctl(&["--user", "stop", name]),
         "start" => systemctl(&["--user", "start", name]),
@@ -231,6 +311,56 @@ pub(super) fn service_action(name: &str, action: &str) -> String {
         Ok(()) => format!("{name}: {action}ed"),
         Err(e) => format!("{name}: {action} failed — {e}"),
     }
+}
+
+pub(crate) fn fetch_software_logs() -> Vec<String> {
+    let entries = crate::state::list();
+    if entries.is_empty() {
+        return vec!["No services deployed yet.".into(), "Deploy a service to see its journal here.".into()];
+    }
+    let mut out = Vec::new();
+    for (name, entry) in entries {
+        out.push(format!("== {} ({}) ==", name, entry.unit_name));
+        let output = std::process::Command::new("journalctl")
+            .args([
+                "--user",
+                "-u",
+                &entry.unit_name,
+                "-n",
+                "50",
+                "--no-pager",
+                "--all",
+                "-o",
+                "short",
+            ])
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                let text = String::from_utf8_lossy(&o.stdout);
+                let mut added = false;
+                for line in text.lines() {
+                    // journalctl lines are already timestamped
+                    out.push(line.to_string());
+                    added = true;
+                }
+                if !added {
+                    out.push("(no log output yet)".into());
+                }
+            }
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                let msg = err.trim();
+                if msg.is_empty() {
+                    out.push("(no journal entries)".into());
+                } else {
+                    out.push(format!("(journalctl: {msg})"));
+                }
+            }
+            Err(e) => out.push(format!("(journalctl not available: {e})")),
+        }
+        out.push(String::new());
+    }
+    out
 }
 
 fn systemctl(args: &[&str]) -> anyhow::Result<()> {

@@ -9,10 +9,12 @@
 //! · red errors · violet scan sections). The event loop ticks ~80ms; the
 //! title gradient and busy spinners are driven off that tick.
 
-mod workers;
+pub mod workers;
 
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Stdout};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc::{self, Receiver, Sender}};
 use std::time::Duration;
 
 use crossterm::ExecutableCommand;
@@ -125,12 +127,33 @@ pub(crate) enum Screen {
         /// Which button the arrow keys currently highlight (defaults to No).
         yes_selected: bool,
     },
+    Logs {
+        view: LogView,
+        deploy_lines: Vec<String>,
+        software_lines: Vec<String>,
+        scroll: usize,
+    },
+    /// YES/NO gate before clearing logs (deploy file + buffer or software buffer).
+    ConfirmClear {
+        target: LogView,
+        yes_selected: bool,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LogView {
+    Deploy,
+    Software,
 }
 
 pub(crate) enum Msg {
     Log(String),
     ScanDone(u64, String),
     DeployDone(bool),
+    SoftwareLog(String),
+    TailLog(String),
+    DeployLogsCleared,
+    SoftwareLogsCleared,
 }
 
 pub(crate) struct App {
@@ -141,6 +164,10 @@ pub(crate) struct App {
     pub tick: u64,
     /// Incremented on every System Scan request; identifies the run.
     pub scan_seq: u64,
+    pub deploy_history: Vec<String>,
+    pub software_history: Vec<String>,
+    deploy_tail_keep: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    software_tail_keep: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Entry point: sets up the terminal, runs the loop, restores the terminal.
@@ -157,6 +184,10 @@ pub fn run() -> anyhow::Result<()> {
         tx,
         tick: 0,
         scan_seq: 0,
+        deploy_history: Vec::new(),
+        software_history: Vec::new(),
+        deploy_tail_keep: None,
+        software_tail_keep: None,
     };
     let res = event_loop(&mut terminal, &mut app);
 
@@ -185,13 +216,38 @@ fn event_loop(
                     }
                 }
                 Msg::Log(line) => {
+                    // deploy_history is the file's mirror when a tail is active —
+                    // don't double-count the same line (Log + TailLog).
+                    let tail_active = app.deploy_tail_keep.is_some();
+                    if !tail_active {
+                        for l in line.split('\n') {
+                            push_deploy_line(&mut app.deploy_history, l.to_string());
+                        }
+                    }
                     if let Screen::Deploy { lines, .. } = &mut app.screen {
                         for l in line.split('\n') {
                             push_deploy_line(lines, l.to_string());
                         }
                     }
+                    // Logs → Deploy is file-tailed (TailLog), never fed from the
+                    // in-process deploy channel — otherwise the deploying window
+                    // would duplicate and other windows would never see it.
+                }
+                Msg::TailLog(line) => {
+                    for l in line.split('\n') {
+                        push_deploy_line(&mut app.deploy_history, l.to_string());
+                    }
+                    if let Screen::Logs { deploy_lines, .. } = &mut app.screen {
+                        for l in line.split('\n') {
+                            push_deploy_line(deploy_lines, l.to_string());
+                        }
+                    }
                 }
                 Msg::DeployDone(ok) => {
+                    if app.deploy_tail_keep.is_none() {
+                        let l = format!("deploy done: {}", if ok { "ok" } else { "failed" });
+                        push_deploy_line(&mut app.deploy_history, l);
+                    }
                     if let Screen::Deploy { lines, done } = &mut app.screen {
                         // The reachable URL is already in the log ("✔ listening
                         // on …"); keep the final verdict laconic and only add a
@@ -201,6 +257,33 @@ fn event_loop(
                         }
                         compress_done(lines);
                         *done = Some(ok);
+                    }
+                    // Logs deploy view is file-tailed; file already contains "== deploy done ==".
+                }
+                Msg::SoftwareLog(line) => {
+                    for l in line.split('\n') {
+                        push_deploy_line(&mut app.software_history, l.to_string());
+                    }
+                    if let Screen::Logs { software_lines, .. } = &mut app.screen {
+                        for l in line.split('\n') {
+                            push_deploy_line(software_lines, l.to_string());
+                        }
+                    }
+                }
+                Msg::DeployLogsCleared => {
+                    app.deploy_history.clear();
+                    if let Screen::Logs { deploy_lines, scroll, .. } = &mut app.screen {
+                        deploy_lines.clear();
+                        deploy_lines.push("Logs cleared.".into());
+                        *scroll = 0;
+                    }
+                }
+                Msg::SoftwareLogsCleared => {
+                    app.software_history.clear();
+                    if let Screen::Logs { software_lines, scroll, .. } = &mut app.screen {
+                        software_lines.clear();
+                        software_lines.push("Logs cleared.".into());
+                        *scroll = 0;
                     }
                 }
             }
@@ -307,12 +390,12 @@ fn on_key(app: &mut App, key: KeyCode, mods: KeyModifiers) -> Flow {
     let cmd = command_char(key);
     match &mut app.screen {
         Screen::Main { selected } => match key {
-            KeyCode::Up | KeyCode::Down => move_main_selection(selected, key),
+            KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => move_main_selection(selected, key),
             KeyCode::Enter | KeyCode::Char(' ') => {}
             KeyCode::Esc => return Flow::Exit,
             _ => match cmd {
-                Some('k') => *selected = selected.saturating_sub(1),
-                Some('j') => *selected = (*selected + 1).min(2),
+                Some('k') | Some('h') => *selected = selected.saturating_sub(1),
+                Some('j') | Some('l') => *selected = (*selected + 1).min(3),
                 Some('q') => return Flow::Exit,
                 _ => {}
             },
@@ -484,14 +567,131 @@ fn on_key(app: &mut App, key: KeyCode, mods: KeyModifiers) -> Flow {
                 None => {}
             }
         }
+        Screen::Logs { view, deploy_lines, software_lines, scroll } => {
+            let active_lines = match view {
+                LogView::Deploy => deploy_lines.len(),
+                LogView::Software => software_lines.len(),
+            };
+            let mut exit = false;
+            let mut clear_target: Option<LogView> = None;
+            match key {
+                KeyCode::Esc | KeyCode::Enter => exit = true,
+                KeyCode::Tab | KeyCode::Right | KeyCode::Left => {
+                    *view = match view {
+                        LogView::Deploy => LogView::Software,
+                        LogView::Software => LogView::Deploy,
+                    };
+                    *scroll = 0;
+                }
+                KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                KeyCode::Down => {
+                    if active_lines > 0 {
+                        *scroll = (*scroll + 1).min(active_lines - 1);
+                    }
+                }
+                KeyCode::PageUp => *scroll = scroll.saturating_sub(20),
+                KeyCode::PageDown => {
+                    *scroll = (*scroll + 20).min(active_lines.saturating_sub(1));
+                }
+                KeyCode::Home => *scroll = 0,
+                KeyCode::End => *scroll = active_lines.saturating_sub(1),
+                _ => match cmd {
+                    Some('q') => exit = true,
+                    Some('d') => clear_target = Some(*view),
+                    _ => {}
+                },
+            }
+            if let Some(target) = clear_target {
+                app.screen = Screen::ConfirmClear { target, yes_selected: false };
+            } else if exit {
+                stop_log_tailers(app);
+                app.screen = Screen::Main { selected: 3 };
+            }
+        }
+        Screen::ConfirmClear { target, yes_selected } => {
+            let mut decision: Option<bool> = None;
+            match key {
+                KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                    *yes_selected = !*yes_selected;
+                }
+                KeyCode::Esc => decision = Some(false),
+                KeyCode::Enter => decision = Some(*yes_selected),
+                _ => match cmd {
+                    Some('y') => *yes_selected = true,
+                    Some('n') => *yes_selected = false,
+                    _ => {}
+                },
+            }
+            match decision {
+                Some(true) => {
+                    match target {
+                        LogView::Deploy => {
+                            workers::clear_deploy_log();
+                            app.deploy_history.clear();
+                            let _ = app.tx.send(Msg::DeployLogsCleared);
+                            app.screen = Screen::Logs {
+                                view: LogView::Deploy,
+                                deploy_lines: vec!["Logs cleared.".into()],
+                                software_lines: std::mem::take(&mut app.software_history),
+                                scroll: 0,
+                            };
+                            // restore software_lines if it was taken empty
+                            if let Screen::Logs { software_lines, .. } = &mut app.screen {
+                                if software_lines.is_empty() {
+                                    *software_lines = workers::fetch_software_logs();
+                                    app.software_history.clone_from(software_lines);
+                                }
+                            }
+                        }
+                        LogView::Software => {
+                            app.software_history.clear();
+                            let _ = app.tx.send(Msg::SoftwareLogsCleared);
+                            // Re-seed deploy_lines from file so deploy view stays coherent
+                            let deploy_lines = {
+                                let dl = workers::read_deploy_log();
+                                if dl.is_empty() { vec!["No deploy logs.".into()] } else { dl }
+                            };
+                            app.deploy_history.clone_from(&deploy_lines);
+                            app.screen = Screen::Logs {
+                                view: LogView::Software,
+                                deploy_lines,
+                                software_lines: vec!["Logs cleared.".into()],
+                                scroll: 0,
+                            };
+                        }
+                    }
+                }
+                Some(false) => {
+                    // back to Logs, preserve buffers
+                    let deploy_lines = if app.deploy_history.is_empty() {
+                        let dl = workers::read_deploy_log();
+                        if dl.is_empty() { vec!["No deploy logs.".into()] } else { dl }
+                    } else {
+                        app.deploy_history.clone()
+                    };
+                    let software_lines = if app.software_history.is_empty() {
+                        workers::fetch_software_logs()
+                    } else {
+                        app.software_history.clone()
+                    };
+                    app.screen = Screen::Logs {
+                        view: *target,
+                        deploy_lines,
+                        software_lines,
+                        scroll: 0,
+                    };
+                }
+                None => {}
+            }
+        }
     }
     Flow::Continue
 }
 
 fn move_main_selection(selected: &mut usize, key: KeyCode) {
     match key {
-        KeyCode::Up => *selected = selected.saturating_sub(1),
-        _ => *selected = (*selected + 1).min(2),
+        KeyCode::Up | KeyCode::Left => *selected = selected.saturating_sub(1),
+        _ => *selected = (*selected + 1).min(3),
     }
 }
 
@@ -513,7 +713,7 @@ fn main_menu_activate(app: &mut App, selected: usize) -> Flow {
                 busy: false,
             }
         }
-        _ => {
+        2 => {
             let rows = workers::service_rows();
             app.screen = Screen::Services {
                 rows,
@@ -521,8 +721,161 @@ fn main_menu_activate(app: &mut App, selected: usize) -> Flow {
                 message: None,
             };
         }
+        3 => {
+            // Deploy logs: single shared file is the source of truth so every
+            // window streams the same live deploy. File survives across processes.
+            let mut deploy_lines = workers::read_deploy_log();
+            if deploy_lines.is_empty() {
+                if !app.deploy_history.is_empty() {
+                    deploy_lines.clone_from(&app.deploy_history);
+                } else {
+                    deploy_lines.push("No deploy logs yet. Start a deployment to see output here.".into());
+                }
+            }
+            // Keep the persistent history in sync with the file so switching
+            // away and back preserves cross-window tail lines.
+            app.deploy_history.clone_from(&deploy_lines);
+
+            let mut software_lines = if app.software_history.is_empty() {
+                let fetched = workers::fetch_software_logs();
+                app.software_history.clone_from(&fetched);
+                fetched
+            } else {
+                app.software_history.clone()
+            };
+            if software_lines.is_empty() {
+                software_lines.push("No software logs yet. Deploy a service to see journal output here.".into());
+            }
+            app.screen = Screen::Logs {
+                view: LogView::Deploy,
+                deploy_lines,
+                software_lines,
+                scroll: 0,
+            };
+            start_log_tailers(app);
+        }
+        _ => {}
     }
     Flow::Continue
+}
+
+fn stop_log_tailers(app: &mut App) {
+    if let Some(k) = app.deploy_tail_keep.take() {
+        k.store(false, Ordering::Relaxed);
+    }
+    if let Some(k) = app.software_tail_keep.take() {
+        k.store(false, Ordering::Relaxed);
+    }
+}
+
+fn start_log_tailers(app: &mut App) {
+    if app.deploy_tail_keep.is_some() && app.software_tail_keep.is_some() {
+        return;
+    }
+    // Deploy: tail the shared deploy.log so every window streams the same live deploy.
+    if app.deploy_tail_keep.is_none() {
+        let keep = Arc::new(AtomicBool::new(true));
+        app.deploy_tail_keep = Some(keep.clone());
+        let tx = app.tx.clone();
+        std::thread::spawn(move || {
+            let path = crate::paths::deploy_log_file();
+            let mut pos = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            loop {
+                std::thread::sleep(Duration::from_millis(500));
+                if !keep.load(Ordering::Relaxed) {
+                    break;
+                }
+                let content = match std::fs::read(&path) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        if pos != 0 {
+                            let _ = tx.send(Msg::DeployLogsCleared);
+                            pos = 0;
+                        }
+                        continue;
+                    }
+                };
+                let len = content.len() as u64;
+                if len < pos {
+                    let _ = tx.send(Msg::DeployLogsCleared);
+                    pos = len;
+                    continue;
+                }
+                if len > pos {
+                    let slice = &content[pos as usize..];
+                    let text = String::from_utf8_lossy(slice);
+                    for line in text.lines() {
+                        if !keep.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if !line.is_empty() || text.contains("\n\n") {
+                            let _ = tx.send(Msg::TailLog(line.to_string()));
+                        }
+                    }
+                    pos = len;
+                }
+            }
+        });
+    }
+    // Software: poll journalctl per unit; incremental per-unit diff.
+    if app.software_tail_keep.is_none() {
+        let keep = Arc::new(AtomicBool::new(true));
+        app.software_tail_keep = Some(keep.clone());
+        let tx = app.tx.clone();
+        std::thread::spawn(move || {
+            let mut last: HashMap<String, Vec<String>> = HashMap::new();
+            // seed — don't re-send lines already in the snapshot
+            for (name, entry) in crate::state::list() {
+                last.insert(name, workers::journal_raw_for(&entry.unit_name));
+            }
+            loop {
+                std::thread::sleep(Duration::from_secs(2));
+                if !keep.load(Ordering::Relaxed) {
+                    break;
+                }
+                let entries = crate::state::list();
+                let names: HashSet<String> = entries.iter().map(|(n, _)| n.clone()).collect();
+                last.retain(|k, _| names.contains(k));
+                for (name, entry) in entries {
+                    if !keep.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let cur = workers::journal_raw_for(&entry.unit_name);
+                    match last.get(&name) {
+                        None => {
+                            let _ = tx.send(Msg::SoftwareLog(format!(
+                                "== {} ({}) ==",
+                                name, entry.unit_name
+                            )));
+                            for l in &cur {
+                                let _ = tx.send(Msg::SoftwareLog(l.clone()));
+                            }
+                            last.insert(name, cur);
+                        }
+                        Some(prev) => {
+                            if cur == *prev {
+                                continue;
+                            }
+                            if cur.len() > prev.len() && cur[..prev.len()] == prev[..] {
+                                for l in &cur[prev.len()..] {
+                                    let _ = tx.send(Msg::SoftwareLog(l.clone()));
+                                }
+                                last.insert(name, cur);
+                            } else {
+                                let _ = tx.send(Msg::SoftwareLog(format!(
+                                    "-- {name} log rotated --"
+                                )));
+                                for l in &cur {
+                                    let _ = tx.send(Msg::SoftwareLog(l.clone()));
+                                }
+                                last.insert(name, cur);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
 }
 
 fn draw(f: &mut ratatui::Frame, app: &App) {
@@ -586,6 +939,12 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         Screen::ConfirmDelete { name, yes_selected } => {
             draw_confirm_delete(f, chunks[1], name, *yes_selected);
         }
+        Screen::Logs { view, deploy_lines, software_lines, scroll } => {
+            draw_logs(f, chunks[1], *view, deploy_lines, software_lines, *scroll);
+        }
+        Screen::ConfirmClear { target, yes_selected } => {
+            draw_confirm_clear(f, chunks[1], *target, *yes_selected);
+        }
     }
 
     f.render_widget(Paragraph::new(hint_line(&app.screen)), chunks[2]);
@@ -636,6 +995,7 @@ fn draw_main_menu(f: &mut ratatui::Frame, area: ratatui::prelude::Rect, selected
             MAGENTA,
         ),
         ("#", "My Services", "manage deployed units", OK_GREEN),
+        ("≡", "Logs", "deploy + software logs (2 screens)", WARN_YELLOW),
     ];
     let list = List::new(items.iter().enumerate().map(|(i, (icon, t, d, hue))| {
         let sel = i == selected;
@@ -1025,6 +1385,42 @@ fn draw_confirm_delete(
     );
 }
 
+fn draw_confirm_clear(
+    f: &mut ratatui::Frame,
+    area: ratatui::prelude::Rect,
+    target: LogView,
+    yes_selected: bool,
+) {
+    let label = match target {
+        LogView::Deploy => "deploy logs",
+        LogView::Software => "software logs",
+    };
+    let note = match target {
+        LogView::Deploy => "This truncates ~/.local/state/demo-ghostprovider/deploy.log and clears the view.",
+        LogView::Software => "This clears the displayed journal view (systemd journal itself is kept).",
+    };
+    let text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" Clear ", Style::default().fg(ERR_RED).add_modifier(Modifier::BOLD)),
+            Span::styled(label.to_string(), Style::default().fg(Color::White)),
+            Span::styled("?", Style::default().fg(ERR_RED)),
+        ]),
+        Line::from(Span::styled(note, Style::default().fg(DIM))),
+        Line::from(""),
+        Line::from(choice_spans("[Y]es", " — clear", ERR_RED, yes_selected)),
+        Line::from(choice_spans("[N]o", " — keep", OK_GREEN, !yes_selected)),
+        Line::from(""),
+        Line::from(Span::styled(" ←→ select · Enter confirm", Style::default().fg(DIM))),
+    ];
+    f.render_widget(
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .block(block("Confirm Clear", ERR_RED)),
+        area,
+    );
+}
+
 /// Blinking terminal-style cursor block.
 fn cursor_span(tick: u64) -> Span<'static> {
     if (tick / 4).is_multiple_of(2) {
@@ -1279,6 +1675,78 @@ fn draw_services(
     );
 }
 
+// --- logs -------------------------------------------------------------------
+
+fn draw_logs(
+    f: &mut ratatui::Frame,
+    area: ratatui::prelude::Rect,
+    view: LogView,
+    deploy_lines: &[String],
+    software_lines: &[String],
+    scroll: usize,
+) {
+    let (title, lines, tab_deploy_active) = match view {
+        LogView::Deploy => (" Deploy Logs ", deploy_lines, true),
+        LogView::Software => (" Software Logs ", software_lines, false),
+    };
+    let tab_bar = Line::from(vec![
+        Span::styled(
+            if tab_deploy_active { " [DEPLOY] " } else { "  DEPLOY  " },
+            ratatui::style::Style::default()
+                .fg(if tab_deploy_active { WARN_YELLOW } else { DIM })
+                .add_modifier(if tab_deploy_active { Modifier::BOLD } else { Modifier::empty() }),
+        ),
+        Span::styled(" · ", Style::default().fg(DIM)),
+        Span::styled(
+            if !tab_deploy_active { " [SOFTWARE] " } else { "  SOFTWARE  " },
+            Style::default()
+                .fg(if !tab_deploy_active { OK_GREEN } else { DIM })
+                .add_modifier(if !tab_deploy_active { Modifier::BOLD } else { Modifier::empty() }),
+        ),
+        Span::styled("  (Tab to switch)", Style::default().fg(DIM)),
+    ]);
+    let inner = ratatui::layout::Layout::vertical([
+        ratatui::layout::Constraint::Length(1),
+        ratatui::layout::Constraint::Min(1),
+    ])
+    .split(area);
+    f.render_widget(Paragraph::new(tab_bar), inner[0]);
+    if lines.is_empty() {
+        let empty_msg = match view {
+            LogView::Deploy => "No deploy logs yet. Start a deployment to see output here.",
+            LogView::Software => "No software logs yet. Journal output will appear here.",
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(empty_msg, Style::default().fg(DIM)))
+                .block(block(title.trim(), if tab_deploy_active { WARN_YELLOW } else { OK_GREEN })),
+            inner[1],
+        );
+        return;
+    }
+    let visible: Vec<Line> = lines[scroll.min(lines.len())..]
+        .iter()
+        .map(|l| {
+            let s = l.trim_start();
+            let style = if s.contains("failed") || s.contains("ERROR") || s.starts_with('!') {
+                Style::default().fg(ERR_RED)
+            } else if s.starts_with('✔') {
+                Style::default().fg(OK_GREEN).add_modifier(Modifier::BOLD)
+            } else if s.starts_with("provision:") || s.starts_with("warn:") {
+                Style::default().fg(WARN_YELLOW)
+            } else {
+                Style::default().fg(BODY)
+            };
+            Line::from(Span::styled(l.clone(), style))
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(visible)
+            .wrap(Wrap { trim: false })
+            .block(block(title.trim(), if tab_deploy_active { WARN_YELLOW } else { OK_GREEN })),
+        inner[1],
+    );
+}
+
 // --- hint bar ---------------------------------------------------------------
 
 fn hint_line(screen: &Screen) -> Line<'static> {
@@ -1319,6 +1787,18 @@ fn hint_line(screen: &Screen) -> Line<'static> {
             ("↑↓ select", BLUE),
             ("[s]top star[t] [d]elete [r]efresh", BLUE),
             ("Esc back", BLUE),
+        ],
+        Screen::Logs { .. } => vec![
+            ("Tab switch", WARN_YELLOW),
+            ("↑↓ scroll", BLUE),
+            ("[d]elete", ERR_RED),
+            ("Esc back", VIOLET),
+        ],
+        Screen::ConfirmClear { .. } => vec![
+            ("←→ select", ACCENT),
+            ("Y/N", ERR_RED),
+            ("Enter confirm", OK_GREEN),
+            ("Esc cancel", WARN_YELLOW),
         ],
     };
     let mut spans: Vec<Span> = Vec::new();

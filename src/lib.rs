@@ -22,4 +22,5 @@ pub mod selftest;
 pub mod serve;
 pub mod state;
 pub mod tui;
+pub mod tui_v2;
 pub mod verify;

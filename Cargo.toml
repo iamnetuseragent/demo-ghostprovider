@@ -20,6 +20,10 @@ tar = "0.4"
 ureq = { version = "3.4.1", default-features = false, features = ["rustls", "gzip", "charset"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+[[bin]]
+name = "demo-test"
+path = "src/bin/demo_test.rs"
+
 [profile.release]
 lto = true
 strip = true

@@ -40,6 +40,11 @@ pub fn netlog_file() -> PathBuf {
     state_home().join("demo-ghostprovider/net.log")
 }
 
+/// Shared deploy log streamed to every window's Logs screen.
+pub fn deploy_log_file() -> PathBuf {
+    state_home().join("demo-ghostprovider/deploy.log")
+}
+
 /// systemd user unit directory.
 pub fn user_unit_dir() -> PathBuf {
     let cfg = std::env::var_os("XDG_CONFIG_HOME")
