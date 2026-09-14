@@ -1,0 +1,35 @@
+# One-off backfill: set release notes for v0.0.33..v0.0.37 using the release
+# token the normal pipeline already uses. Merges into main and removed after it
+# has run once.
+name: backfill-releases
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Edit release notes
+        run: |
+          set -eu
+          for tag in v0.0.33 v0.0.34 v0.0.35 v0.0.36 v0.0.37; do
+            file="release/notes/${tag}.md"
+            if [ ! -f "$file" ]; then
+              continue
+            fi
+            if gh release view "$tag" --repo iamnetuseragent/demo-ghostprovider >/dev/null 2>&1; then
+              gh release edit "$tag" --notes-file "$file" --repo iamnetuseragent/demo-ghostprovider
+              echo "updated: $tag"
+            fi
+          done
