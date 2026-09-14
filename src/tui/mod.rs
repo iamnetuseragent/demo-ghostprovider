@@ -927,7 +927,7 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
             draw_confirm(f, chunks[1], url, service_label, *yes_selected);
         }
         Screen::Deploy { lines, done } => {
-            draw_deploy(f, chunks[1], lines, *done);
+            draw_deploy(f, chunks[1], lines, *done, crate::netstatus::summary());
         }
         Screen::Services {
             rows,
@@ -1437,12 +1437,36 @@ fn draw_deploy(
     area: ratatui::prelude::Rect,
     lines: &[String],
     done: Option<bool>,
+    net: Option<crate::netstatus::NetSummary>,
 ) {
     let inner = Layout::vertical([
+        Constraint::Length(net.map_or(0, |_| 1)),
         Constraint::Min(1),
         Constraint::Length(done.map_or(0, |_| 1)),
     ])
     .split(area);
+    if let Some(n) = net {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    " ⚠ NET ",
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(WARN_YELLOW)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        " {} host(s) unreachable — permanent retry, next probe is automatic (since {})",
+                        n.down_hosts,
+                        fmt_time(n.since)
+                    ),
+                    Style::default().fg(WARN_YELLOW),
+                ),
+            ])),
+            inner[0],
+        );
+    }
     let mut spans: Vec<Line> = Vec::new();
     let mut prev_doctor = false;
     for l in lines {
@@ -1470,7 +1494,7 @@ fn draw_deploy(
         Paragraph::new(spans)
             .wrap(Wrap { trim: false })
             .block(block("Deployment", MAGENTA)),
-        inner[0],
+        inner[1],
     );
     if let Some(ok) = done {
         let (label, fg) = if ok {
@@ -1487,8 +1511,19 @@ fn draw_deploy(
                     .add_modifier(Modifier::BOLD),
             )))
             .alignment(ratatui::layout::Alignment::Center),
-            inner[1],
+            inner[2],
         );
+    }
+}
+
+fn fmt_time(d: std::time::Duration) -> String {
+    let total = d.as_secs();
+    if total >= 3600 {
+        format!("{}h{}m", total / 3600, (total % 3600) / 60)
+    } else if total >= 60 {
+        format!("{}m{}s", total / 60, total % 60)
+    } else {
+        format!("{total}s")
     }
 }
 

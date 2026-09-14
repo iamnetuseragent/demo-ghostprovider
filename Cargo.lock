@@ -332,11 +332,13 @@ dependencies = [
  "libc",
  "ratatui",
  "regex-lite",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
  "tar",
  "ureq",
+ "webpki-roots",
  "zip",
 ]
 

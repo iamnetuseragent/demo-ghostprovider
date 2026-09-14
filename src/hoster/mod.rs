@@ -12,6 +12,7 @@ pub mod preflight;
 pub mod prefetch;
 pub mod rawfetch;
 pub mod recipes;
+pub mod resolver;
 pub mod sandbox;
 pub mod secrets;
 pub mod toolbox;
