@@ -103,15 +103,36 @@ jobs:
           }
           echo "::endgroup::"
 
+      - name: Compose release notes
+        run: |
+          set -eu
+          TAG="${{ github.ref_name }}"
+          # A curated body in the tag's annotated message wins; otherwise
+          # fall back to the commit subjects since the previous tag (covers
+          # lightweight tags — this repo ships direct commits, so GitHub's
+          # PR-based auto-notes are always empty here).
+          BODY="$(git tag -l --format='%(contents:body)' "$TAG" | sed '/^[[:space:]]*$/d' || true)"
+          if [ -z "$BODY" ]; then
+            PREV="$(git describe --abbrev=0 --tags "$TAG^" 2>/dev/null || true)"
+            if [ -n "$PREV" ]; then
+              BODY="$(git log --format='- %s' "$PREV".."$TAG")"
+            else
+              BODY="$(git log --format='- %s' "$TAG")"
+            fi
+          fi
+          if [ -n "$BODY" ]; then
+            printf '%s\n' "$BODY" > /tmp/release_body.md
+          fi
+
       - name: Attach to release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           # Publish under the maintainer identity instead of
           # github-actions[bot]; Contents RW on this repo is sufficient.
           token: ${{ secrets.GH_RELEASE_TOKEN }}
-          # Auto-notes from commit history; a curated body in the tag's
-          # annotated message would win if we ever add one.
-          generate_release_notes: true
+          # Explicit body from the annotated tag message / commit history,
+          # never GitHub's PR-based auto-notes (empty for direct-commit repos).
+          body_path: /tmp/release_body.md
           # dist/* = binary + SHA256SUMS computed by THIS run. The signed
           # release/SHA256SUMS(.minisig) were already verified above.
           fail_on_unmatched_files: true
