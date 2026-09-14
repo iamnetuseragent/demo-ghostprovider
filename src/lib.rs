@@ -16,6 +16,7 @@ pub mod atomic;
 pub mod flags;
 pub mod hoster;
 pub mod netlog;
+pub mod netstatus;
 pub mod output;
 pub mod paths;
 pub mod selftest;

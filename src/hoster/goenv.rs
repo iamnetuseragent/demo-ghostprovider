@@ -287,7 +287,10 @@ pub fn seed_go_modules(project_dir: &Path) -> anyhow::Result<SeedResult> {
             let mut attempt: u32 = 0;
             loop {
                 match seed_one_module(&cache, &module, &ver, &h1) {
-                    Ok(()) => break,
+                    Ok(()) => {
+                        crate::netstatus::note_up(&module);
+                        break;
+                    }
                     Err(e) => {
                         let msg = format!("{e:#}");
                         if is_terminal_http(&msg) {
@@ -295,8 +298,16 @@ pub fn seed_go_modules(project_dir: &Path) -> anyhow::Result<SeedResult> {
                             break;
                         }
                         // Transient — permanent retry with exponential backoff.
+                        // Network/DNS blips never surface here anymore
+                        // (`remote_len` + body fetches retry forever inside
+                        // httpclient); the remaining cases are local/rare, so
+                        // report through the coalesced net reporter and bound
+                        // the per-module line to the first backoff stages.
                         let delay = seed_backoff(attempt);
-                        eprintln!("go module retry #{attempt}: {module}@{ver}: {msg} — waiting {delay:?}");
+                        crate::netstatus::note_down(&module);
+                        if attempt < 8 {
+                            eprintln!("go module retry #{attempt}: {module}@{ver}: {msg} — waiting {delay:?}");
+                        }
                         std::thread::sleep(delay);
                         attempt = attempt.saturating_add(1).min(30);
                     }

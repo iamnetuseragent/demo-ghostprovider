@@ -162,7 +162,13 @@ fn agent_with_proxy(
     if let Some(enc) = accept_encoding {
         b = b.accept_encoding(enc);
     }
-    b.timeout_global(Some(global)).build().into()
+    b = b.timeout_global(Some(global));
+    let config = b.build();
+    ureq::Agent::with_parts(
+        config,
+        ureq::unversioned::transport::DefaultConnector::default(),
+        super::resolver::SmartResolver::default(),
+    )
 }
 
 /// The proxy from the environment that would actually be used for `url`, or
@@ -306,16 +312,19 @@ fn record_failure(url: &str, err: &ureq::Error) {
 /// Total length of a range-addressable blob without transferring it. Sends a
 /// `Range: bytes=0-0` probe under identity encoding (so a gzip decision at
 /// the proxy cannot skew the reported size) and reads the size from a
-/// standard range-response header. Traverses the same [`attempt_range`]
-/// path, so every hop is allowlist-gated and net.log-recorded.
+/// standard range-response header. Traverses the same retry core as every
+/// other fetch ([`fetch`] with a `(0,0)` range), so a DNS/transient blip is
+/// absorbed by the shared permanent-retry loop and net.log-recorded — never
+/// the instant-fail path the old per-module `go module retry` loop was born
+/// from.
 pub fn remote_len(url: &str) -> anyhow::Result<u64> {
-    let agent = agent_with_proxy(
+    let res = fetch(
+        url,
         Duration::from_secs(30),
         Some(Duration::from_secs(60)),
-        Some(ureq::config::AutoHeaderValue::None),
         true,
-    );
-    let res = attempt_range(&agent, url, (0, 0)).map_err(|e| anyhow::anyhow!("{e}"))?;
+        Some((0, 0)),
+    )?;
     let status = res.status().as_u16();
     if status >= 400 {
         anyhow::bail!("probe failed: HTTP {status} for {url}");
@@ -409,8 +418,10 @@ fn fetch(
                     }
                     // Other 4xx: terminal (bad request, not found, etc.).
                     if (400..=499).contains(&code) {
+                        crate::netstatus::note_up(&host_of(url).unwrap_or_default());
                         return Err(anyhow!("HTTP {code} from {url}"));
                     }
+                    crate::netstatus::note_up(&host_of(url).unwrap_or_default());
                     return Ok(r);
                 }
                 Err(e @ ureq::Error::StatusCode(_)) => {
@@ -438,6 +449,8 @@ fn fetch(
         }
         // Permanent retry: exponential backoff capped at MAX_BACKOFF.
         let delay = backoff_delay(attempt_no);
+        // Coalesced "network looks down" reporting (the anti-spam half).
+        crate::netstatus::note_down(&host_of(url).unwrap_or_default());
         std::thread::sleep(delay);
         // Safety: attempt_no saturates at 30 to keep delay at cap.
         attempt_no = attempt_no.saturating_add(1).min(30);

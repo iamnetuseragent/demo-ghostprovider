@@ -16,6 +16,7 @@ fn allowlist_matches_documented_endpoints() {
         vec![
             "api.github.com",
             "cdn.jsdelivr.net",
+            "cloudflare-dns.com",
             "codeload.github.com",
             "dl.google.com",
             "github.com",

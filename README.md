@@ -4,6 +4,25 @@
 
 ![GHOST PROVIDER Panel](assets/GHOSTPROVIDER%20PANEL.JPEG)
 
+## 📜 License — read this before you fork
+
+GhostProvider is **source-available**, not OSI open-source software. The full
+terms are in [LICENSE](LICENSE). What they mean for you:
+
+- **You may** read and study the source code, and use, modify, and run the
+  program for **personal, non-commercial** purposes.
+- **You may NOT** fork, modify, publish, or redistribute the project, and
+  **may NOT** use it commercially (selling it, offering it as a service,
+  bundling it into a product) — **without prior written permission** from the
+  author.
+- Any permitted modification must retain the copyright notice and this license
+  as-is.
+
+In short: forking for a personal experiment is fine per the license; publishing
+your fork, redistributing it, or using it commercially requires asking first.
+To request permission, open an issue
+([github.com/iamnetuseragent/demo-ghostprovider/issues](https://github.com/iamnetuseragent/demo-ghostprovider/issues)).
+
 ## One-Click Deploy
 
 Paste a GitHub URL — deploy one of the three supported services as a systemd service.
@@ -38,6 +57,8 @@ This is the standard on Arch, Ubuntu, Fedora, Debian, and most modern Linux dist
 Here is the security module that Ghost Provider uses, this is the necessary architecture for the secure operation of the software.
 
 - **All data stays local** — every request goes through an HTTPS client locked to a compile-time host allowlist, is recorded in net.log, and credentials never leave api.github.com. Nothing is sent to third parties.
+
+- **DNS that survives broken VPN/TUN setups** — resolution is system `getaddrinfo` first; if that fails or times out (broken TUN DNS, `EAI_AGAIN` storms), the client transparently falls back to a DNS-over-HTTPS bootstrap at `cloudflare-dns.com` (pinned anycast IPs, Mozilla roots), which is allowlisted and net.log-recorded like any other outbound hop. Retries remain permanent — the deploy never fails closed on a transient network blip, and a network outage is reported as one clear status line instead of a retry storm.
 
 - **No root required** — services run as ordinary systemd user units; no sudo, no elevated privileges, nothing installed system-wide.
 

@@ -65,9 +65,18 @@ use std::time::SystemTime;
 /// `toolbox.rs::TOOLBOX_PINS` before a single executable is placed. These
 /// fetches are an alternative to a manually installed tool, never a bypass of
 /// the shadowed offline build (which still has no network).
+///
+/// `cloudflare-dns.com` is the DNS-over-HTTPS *bootstrap* used by
+/// `hoster/resolver.rs` only when the system resolver fails (broken TUN/VPN
+/// DNS, `EAI_AGAIN` storms). It is a pure DNS transport, served by pinned
+/// anycast IPs — it never carries application data, every lookup is recorded
+/// in net.log like any other hop, and the resulting addresses are then used
+/// only by the regular allowlist-gated client. The permit is explicit because
+/// a raw DoH socket bypasses `ensure_allowed` by construction.
 pub const ALLOWED_ENDPOINTS: &[&str] = &[
     "api.github.com",
     "cdn.jsdelivr.net",
+    "cloudflare-dns.com",
     "dl.google.com",
     "github.com",
     "raw.githubusercontent.com",
@@ -268,6 +277,7 @@ mod tests {
             &[
                 "api.github.com",
                 "cdn.jsdelivr.net",
+                "cloudflare-dns.com",
                 "dl.google.com",
                 "github.com",
                 "raw.githubusercontent.com",
