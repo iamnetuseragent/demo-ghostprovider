@@ -56,6 +56,12 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Full history + tags: the "Compose release notes" step resolves the
+          # previous tag (git describe) and the annotated tag body, which
+          # require tags to exist locally.
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Build (--locked, static)
         run: |
