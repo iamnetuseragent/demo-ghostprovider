@@ -111,24 +111,32 @@ jobs:
 
       - name: Compose release notes
         run: |
-          set -eu
           TAG="${{ github.ref_name }}"
-          # A curated body in the tag's annotated message wins; otherwise
-          # fall back to the commit subjects since the previous tag (covers
-          # lightweight tags — this repo ships direct commits, so GitHub's
-          # PR-based auto-notes are always empty here).
-          BODY="$(git tag -l --format='%(contents:body)' "$TAG" | sed '/^[[:space:]]*$/d' || true)"
+          SRC="none"
+          BODY=""
+          # Prefer curated committed notes, then the annotated tag body, then
+          # the commit history. Every git probe is guarded so a missing tag or
+          # shallow history can never fail the release.
+          if [ -f "release/notes/${TAG}.md" ]; then
+            BODY="$(cat "release/notes/${TAG}.md")"
+            SRC="committed-notes"
+          elif git tag -l --format='%(contents:body)' "$TAG" 2>/dev/null | sed '/^[[:space:]]*$/d' > /tmp/notes_body.txt && [ -s /tmp/notes_body.txt ]; then
+            BODY="$(cat /tmp/notes_body.txt)"
+            SRC="annotated-tag"
+          fi
           if [ -z "$BODY" ]; then
-            PREV="$(git describe --abbrev=0 --tags "$TAG^" 2>/dev/null || true)"
+            PREV="$(git describe --abbrev=0 --tags "${TAG}^" 2>/dev/null || true)"
             if [ -n "$PREV" ]; then
-              BODY="$(git log --format='- %s' "$PREV".."$TAG")"
+              if BODY="$(git log --format='- %s' "${PREV}..${TAG}" 2>/dev/null)"; then SRC="commit-log"; else BODY=""; fi
             else
-              BODY="$(git log --format='- %s' "$TAG")"
+              if BODY="$(git log --format='- %s' "$TAG" 2>/dev/null)"; then SRC="commit-log-all"; else BODY=""; fi
             fi
           fi
+          : > /tmp/release_body.md
           if [ -n "$BODY" ]; then
             printf '%s\n' "$BODY" > /tmp/release_body.md
           fi
+          echo "::warning::release-notes source=$SRC tag=$TAG taghits=$(git tag -l "$TAG" 2>/dev/null | wc -l | tr -d ' ') body_bytes=$(wc -c < /tmp/release_body.md | tr -d ' ')"
 
       - name: Attach to release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
