@@ -28,7 +28,7 @@ To request permission, open an issue
 Paste a GitHub URL — deploy one of the three supported services as a systemd service.
 Private, local, no third parties.
 
-![Demo GhostProvider](assets/demo-experience.gif)
+![Experience with GhostProvider](assets/Experience-with-GhostProvider.gif)
 
 ## Requirements
 
