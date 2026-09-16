@@ -1,9 +1,3 @@
-<h1 align="center">Automated self-hosting platform</h1>
-
-> <p align="center">GhostProvider is an open-source platform that simplifies self-hosting</p>
-
-![GHOST PROVIDER Panel](assets/GHOSTPROVIDER%20PANEL.JPEG)
-
 ## 📜 License — read this before you fork
 
 GhostProvider is **source-available**, not OSI open-source software. The full
@@ -22,6 +16,12 @@ In short: forking for a personal experiment is fine per the license; publishing
 your fork, redistributing it, or using it commercially requires asking first.
 To request permission, open an issue
 ([github.com/iamnetuseragent/demo-ghostprovider/issues](https://github.com/iamnetuseragent/demo-ghostprovider/issues)).
+
+<h1 align="center">Automated self-hosting platform</h1>
+
+> <p align="center">GhostProvider is an open-source platform that simplifies self-hosting</p>
+
+![GHOST PROVIDER Panel](assets/GHOSTPROVIDER%20PANEL.JPEG)
 
 ## One-Click Deploy
 
