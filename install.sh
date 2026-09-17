@@ -3,15 +3,15 @@
 #
 # Simplest: one command, no pre-verification ceremony:
 #
-#   curl -fsSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh -s -- --uninstall
+#   curl -fsSL https://raw.githubusercontent.com/nethoster/demo-ghostprovider/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/nethoster/demo-ghostprovider/main/install.sh | sh -s -- --uninstall
 #
 # The script verifies the DOWNLOADED RELEASE itself (minisign, fail-closed)
 # before installing. To also verify the installer script before running it
 # (itself signed as `install.sh` + `install.sh.minisig`):
 #
-#   curl -fsSL -o /tmp/dgp-install.sh https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh
-#   curl -fsSL -o /tmp/dgp-install.sh.minisig https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh.minisig
+#   curl -fsSL -o /tmp/dgp-install.sh https://raw.githubusercontent.com/nethoster/demo-ghostprovider/main/install.sh
+#   curl -fsSL -o /tmp/dgp-install.sh.minisig https://raw.githubusercontent.com/nethoster/demo-ghostprovider/main/install.sh.minisig
 #   minisign -Vm /tmp/dgp-install.sh -x /tmp/dgp-install.sh.minisig -P "RWSUAckJJhM011XphIH3LQE0Ebn62qqMMQej4Ong52/rGNw/rxRKniqA" && sh /tmp/dgp-install.sh
 #
 # The public key/fingerprint are published in docs/DISTRIBUTION.md; cross-check
@@ -41,7 +41,7 @@
 #          Neither flag is ever the default; both require the explicit user.
 set -eu
 
-REPO_GH="iamnetuseragent/demo-ghostprovider"
+REPO_GH="nethoster/demo-ghostprovider"
 REPO_CB="netuser/demo-ghostprovider"
 BIN_NAME="demo-ghostprovider"
 DEFAULT_BIN_DIR="${HOME}/.local/bin"

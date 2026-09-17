@@ -15,7 +15,7 @@ terms are in [LICENSE](LICENSE). What they mean for you:
 In short: forking for a personal experiment is fine per the license; publishing
 your fork, redistributing it, or using it commercially requires asking first.
 To request permission, open an issue
-([github.com/iamnetuseragent/demo-ghostprovider/issues](https://github.com/iamnetuseragent/demo-ghostprovider/issues)).
+([github.com/nethoster/demo-ghostprovider/issues](https://github.com/nethoster/demo-ghostprovider/issues)).
 
 <h1 align="center">Automated self-hosting platform</h1>
 
@@ -98,7 +98,7 @@ This is a restricted demo version of GhostProvider that only supports deploying 
 One command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/nethoster/demo-ghostprovider/main/install.sh | sh
 ```
 
 `install.sh` fails closed by default: it downloads the release and its minisign
@@ -128,5 +128,5 @@ from above covers `--uninstall`, which fully removes the binary, all demo-*
 systemd user units, the deploy registry/secrets state and installed service data:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh | sh -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/nethoster/demo-ghostprovider/main/install.sh | sh -s -- --uninstall
 ```

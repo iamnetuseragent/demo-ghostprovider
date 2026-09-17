@@ -103,8 +103,8 @@ The one-shot demo installer (`install.sh`) is signed with the same key too
 verified **before** it is executed instead of being piped to `sh` unchecked:
 
 ```sh
-curl -fsSL -o /tmp/dgp-install.sh https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh
-curl -fsSL -o /tmp/dgp-install.sh.minisig https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/install.sh.minisig
+curl -fsSL -o /tmp/dgp-install.sh https://raw.githubusercontent.com/nethoster/demo-ghostprovider/main/install.sh
+curl -fsSL -o /tmp/dgp-install.sh.minisig https://raw.githubusercontent.com/nethoster/demo-ghostprovider/main/install.sh.minisig
 minisign -Vm /tmp/dgp-install.sh -x /tmp/dgp-install.sh.minisig -P "$(sed -n 2p docs/release.pub)"
 sh /tmp/dgp-install.sh
 ```

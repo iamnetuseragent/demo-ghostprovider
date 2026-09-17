@@ -676,7 +676,7 @@ mod tests {
             std::env::set_var("NO_PROXY", "");
         }
         let body = get_bytes(
-            "https://raw.githubusercontent.com/iamnetuseragent/demo-ghostprovider/main/README.md",
+            "https://raw.githubusercontent.com/nethoster/demo-ghostprovider/main/README.md",
         )
         .unwrap();
         unsafe {
