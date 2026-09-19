@@ -28,9 +28,7 @@ To request permission, open an issue
 Paste a GitHub URL — deploy one of the three supported services as a systemd service.
 Private, local, no third parties.
 
-<video controls="controls" muted="muted" loop="loop" src="https://github.com/nethoster/demo-ghostprovider/raw/main/assets/user-experience.mp4">
-Your browser does not support HTML5 video.
-</video>
+![Experience with GhostProvider](assets/user-experience.mp4)
 
 ## Requirements
 
